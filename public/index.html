@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Platform B - Admin Portal</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      padding: 40px;
+      max-width: 600px;
+      width: 100%;
+    }
+
+    h1 {
+      color: #1e3c72;
+      margin-bottom: 10px;
+      font-size: 28px;
+      text-align: center;
+    }
+
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .section {
+      display: none;
+      animation: fadeIn 0.3s;
+    }
+
+    .section.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .input-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      color: #555;
+      font-weight: 600;
+      margin-bottom: 8px;
+      font-size: 14px;
+    }
+
+    input, textarea {
+      width: 100%;
+      padding: 12px 16px;
+      border: 2px solid #e1e4e8;
+      border-radius: 8px;
+      font-size: 14px;
+      transition: all 0.3s;
+      font-family: inherit;
+    }
+
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: #1e3c72;
+      box-shadow: 0 0 0 3px rgba(30, 60, 114, 0.1);
+    }
+
+    button {
+      background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+      color: white;
+      border: none;
+      padding: 14px 32px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      width: 100%;
+    }
+
+    button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(30, 60, 114, 0.3);
+    }
+
+    button:active {
+      transform: translateY(0);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .secondary-btn {
+      background: #6c757d;
+      margin-top: 10px;
+    }
+
+    .alert {
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      display: none;
+    }
+
+    .alert.active {
+      display: block;
+    }
+
+    .alert-error {
+      background: #fee;
+      color: #c33;
+      border: 1px solid #fcc;
+    }
+
+    .alert-success {
+      background: #efe;
+      color: #3c3;
+      border: 1px solid #cfc;
+    }
+
+    .alert-info {
+      background: #eef;
+      color: #33c;
+      border: 1px solid #ccf;
+    }
+
+    .security-string-box {
+      background: #f8f9fa;
+      padding: 16px;
+      border-radius: 8px;
+      margin: 20px 0;
+      border-left: 4px solid #28a745;
+    }
+
+    .security-string-box h3 {
+      color: #333;
+      font-size: 16px;
+      margin-bottom: 8px;
+    }
+
+    .security-string-value {
+      background: white;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      word-break: break-all;
+      border: 1px solid #dee2e6;
+      margin-bottom: 10px;
+    }
+
+    .copy-btn {
+      background: #28a745;
+      padding: 8px 16px;
+      font-size: 14px;
+      width: auto;
+      display: inline-block;
+    }
+
+    .result-box {
+      background: #f8f9fa;
+      padding: 16px;
+      border-radius: 8px;
+      margin-top: 20px;
+      border-left: 4px solid #1e3c72;
+    }
+
+    .result-box h3 {
+      color: #333;
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+
+    .result-item {
+      margin-bottom: 12px;
+    }
+
+    .result-label {
+      font-size: 12px;
+      color: #666;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .result-value {
+      background: white;
+      padding: 10px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      word-break: break-all;
+      border: 1px solid #dee2e6;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .video-list {
+      max-height: 300px;
+      overflow-y: auto;
+      margin-top: 20px;
+    }
+
+    .video-item {
+      background: #f8f9fa;
+      padding: 12px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      border: 1px solid #dee2e6;
+    }
+
+    .video-item strong {
+      color: #1e3c72;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔐 Platform B - Admin Portal</h1>
+    <p class="subtitle">Secure Video URL Wrapper Service</p>
+
+    <div id="alert" class="alert"></div>
+
+    <!-- Login Section -->
+    <div id="loginSection" class="section active">
+      <div class="input-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" placeholder="Enter admin username" autocomplete="username">
+      </div>
+
+      <div class="input-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="Enter admin password" autocomplete="current-password">
+      </div>
+
+      <button onclick="login()">
+        🔓 Login
+      </button>
+    </div>
+
+    <!-- Admin Dashboard -->
+    <div id="dashboardSection" class="section">
+      <div class="security-string-box">
+        <h3>🔑 Your Security String</h3>
+        <p style="font-size: 13px; color: #666; margin-bottom: 10px;">
+          Use this string in Platform C to authenticate video requests.
+        </p>
+        <div class="security-string-value" id="securityStringDisplay">
+          Loading...
+        </div>
+        <button class="copy-btn" onclick="copySecurityString()">
+          📋 Copy Security String
+        </button>
+      </div>
+
+      <div class="input-group">
+        <label for="platformAUrl">Platform A Video URL</label>
+        <textarea 
+          id="platformAUrl" 
+          rows="3" 
+          placeholder="Paste the video URL from Platform A (e.g., YouTube, Vimeo, etc.)"
+        ></textarea>
+      </div>
+
+      <button onclick="wrapVideo()">
+        🎬 Wrap Video & Generate Platform B URL
+      </button>
+
+      <button class="secondary-btn" onclick="loadVideoList()">
+        📋 View All Wrapped Videos
+      </button>
+
+      <button class="secondary-btn" onclick="logout()">
+        🚪 Logout
+      </button>
+
+      <div id="resultBox" style="display: none;"></div>
+      <div id="videoList" class="video-list" style="display: none;"></div>
+    </div>
+  </div>
+
+  <script>
+    let sessionToken = null;
+    let securityString = null;
+    const API_BASE = window.location.origin;
+
+    function showAlert(message, type = 'info') {
+      const alertEl = document.getElementById('alert');
+      alertEl.textContent = message;
+      alertEl.className = `alert alert-${type} active`;
+      
+      if (type === 'success') {
+        setTimeout(() => {
+          alertEl.classList.remove('active');
+        }, 5000);
+      }
+    }
+
+    function hideAlert() {
+      document.getElementById('alert').classList.remove('active');
+    }
+
+    function showSection(sectionId) {
+      document.querySelectorAll('.section').forEach(section => {
+        section.classList.remove('active');
+      });
+      document.getElementById(sectionId).classList.add('active');
+    }
+
+    async function login() {
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value.trim();
+
+      if (!username || !password) {
+        showAlert('Please enter username and password', 'error');
+        return;
+      }
+
+      hideAlert();
+
+      try {
+        const response = await fetch(`${API_BASE}/api/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Login failed');
+        }
+
+        sessionToken = data.sessionToken;
+        securityString = data.securityString;
+
+        document.getElementById('securityStringDisplay').textContent = securityString;
+        
+        showAlert('Login successful! Your security string is displayed below.', 'success');
+        showSection('dashboardSection');
+
+      } catch (error) {
+        showAlert(error.message, 'error');
+      }
+    }
+
+    function copySecurityString() {
+      navigator.clipboard.writeText(securityString).then(() => {
+        showAlert('Security string copied to clipboard!', 'success');
+      }).catch(err => {
+        showAlert('Failed to copy: ' + err.message, 'error');
+      });
+    }
+
+    async function wrapVideo() {
+      const platformAUrl = document.getElementById('platformAUrl').value.trim();
+
+      if (!platformAUrl) {
+        showAlert('Please enter a Platform A video URL', 'error');
+        return;
+      }
+
+      try {
+        new URL(platformAUrl);
+      } catch (e) {
+        showAlert('Invalid URL format', 'error');
+        return;
+      }
+
+      hideAlert();
+
+      try {
+        const response = await fetch(`${API_BASE}/api/wrap-video`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Session-Token': sessionToken,
+            'X-Security-String': securityString,
+          },
+          body: JSON.stringify({ platformAUrl }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to wrap video');
+        }
+
+        // Display result
+        const resultBox = document.getElementById('resultBox');
+        resultBox.style.display = 'block';
+        resultBox.innerHTML = `
+          <div class="result-box">
+            <h3>✅ Video Wrapped Successfully!</h3>
+            <div class="result-item">
+              <div class="result-label">Platform B URL (Share this with Platform C)</div>
+              <div class="result-value">${data.platformBUrl}</div>
+            </div>
+            <div class="result-item">
+              <div class="result-label">Wrapped Video ID</div>
+              <div class="result-value">${data.wrappedVideoId}</div>
+            </div>
+            <button class="copy-btn" onclick="copyToClipboard('${data.platformBUrl}')">
+              📋 Copy Platform B URL
+            </button>
+          </div>
+        `;
+
+        showAlert('Video wrapped successfully! Platform B URL is ready.', 'success');
+        document.getElementById('platformAUrl').value = '';
+
+      } catch (error) {
+        showAlert(error.message, 'error');
+      }
+    }
+
+    async function loadVideoList() {
+      try {
+        const response = await fetch(`${API_BASE}/api/videos`, {
+          headers: {
+            'X-Session-Token': sessionToken,
+          },
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to load videos');
+        }
+
+        const videoList = document.getElementById('videoList');
+        
+        if (data.videos.length === 0) {
+          videoList.innerHTML = '<div class="video-item">No videos wrapped yet.</div>';
+        } else {
+          videoList.innerHTML = data.videos.map((video, index) => `
+            <div class="video-item">
+              <strong>Video ${index + 1}</strong><br>
+              <small>ID: ${video.videoId}</small><br>
+              <small>Created: ${new Date(video.createdAt).toLocaleString()}</small><br>
+              <small>Platform B URL: <code>${video.platformBUrl}</code></small>
+            </div>
+          `).join('');
+        }
+
+        videoList.style.display = 'block';
+        showAlert(`Loaded ${data.videos.length} wrapped videos`, 'info');
+
+      } catch (error) {
+        showAlert(error.message, 'error');
+      }
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text).then(() => {
+        showAlert('URL copied to clipboard!', 'success');
+      }).catch(err => {
+        showAlert('Failed to copy: ' + err.message, 'error');
+      });
+    }
+
+    function logout() {
+      sessionToken = null;
+      securityString = null;
+      document.getElementById('username').value = '';
+      document.getElementById('password').value = '';
+      document.getElementById('platformAUrl').value = '';
+      document.getElementById('resultBox').style.display = 'none';
+      document.getElementById('videoList').style.display = 'none';
+      showSection('loginSection');
+      showAlert('Logged out successfully', 'info');
+    }
+
+    // Handle Enter key
+    document.getElementById('username').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('password').focus();
+    });
+
+    document.getElementById('password').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') login();
+    });
+  </script>
+</body>
+</html>
