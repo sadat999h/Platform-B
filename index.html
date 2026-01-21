@@ -80,45 +80,18 @@
             cursor: not-allowed;
             transform: none;
         }
-        .security-section {
-            background: #f5f5f5;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-        }
-        .security-title {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 14px;
-        }
-        .security-string {
-            background: white;
-            padding: 12px;
-            border-radius: 6px;
-            word-break: break-all;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            border: 2px solid #e0e0e0;
-            margin-bottom: 10px;
-        }
-        .warning {
-            background: #fff3cd;
-            padding: 12px;
-            border-radius: 6px;
-            color: #856404;
-            font-size: 13px;
-            border-left: 4px solid #ffc107;
-            margin-top: 10px;
-        }
         .info-box {
             background: #e3f2fd;
-            padding: 12px;
-            border-radius: 6px;
+            padding: 15px;
+            border-radius: 8px;
             color: #1565c0;
             font-size: 13px;
             border-left: 4px solid #2196f3;
             margin-bottom: 20px;
+        }
+        .info-box strong {
+            display: block;
+            margin-bottom: 5px;
         }
         .result {
             background: #e8f5e9;
@@ -140,15 +113,6 @@
             background: white;
             padding: 12px;
             border-radius: 6px;
-            margin-top: 8px;
-        }
-        .result-type {
-            display: inline-block;
-            background: #4caf50;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
             margin-top: 8px;
         }
         .error {
@@ -192,36 +156,17 @@
             font-size: 11px;
             margin-left: 8px;
         }
-        .supported-platforms {
-            background: #f5f5f5;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        .supported-platforms h4 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 14px;
-        }
-        .platform-tag {
-            display: inline-block;
-            background: white;
-            padding: 4px 10px;
-            border-radius: 4px;
-            margin: 4px;
-            font-size: 12px;
-            border: 1px solid #e0e0e0;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Platform B</h1>
-        <p class="subtitle">Secure Video URL Generator</p>
+        <p class="subtitle">Google Drive Video URL Generator</p>
         
         <div id="loginSection">
             <div class="info-box">
-                ℹ️ <strong>Supported Platforms:</strong> YouTube, Google Drive, Vimeo, Dailymotion, and more!
+                <strong>📁 Google Drive Only</strong>
+                Make sure your video is set to "Anyone with the link can view"
             </div>
             
             <div class="form-group">
@@ -237,34 +182,18 @@
         </div>
 
         <div id="mainSection" class="hidden">
-            <div class="security-section">
-                <div class="security-title">🔐 Your Security String</div>
-                <div class="security-string" id="securityString"></div>
-                <button class="copy-btn" onclick="copySecurityString()">Copy Security String</button>
-                <div class="warning">
-                    ⚠️ Keep this security string safe! You'll need it to configure Platform C.
-                </div>
-            </div>
-
-            <div class="supported-platforms">
-                <h4>✅ Supported Video Platforms:</h4>
-                <span class="platform-tag">🎥 YouTube</span>
-                <span class="platform-tag">📁 Google Drive</span>
-                <span class="platform-tag">🎬 Vimeo</span>
-                <span class="platform-tag">📺 Dailymotion</span>
-                <span class="platform-tag">🌐 Direct URLs</span>
+            <div class="info-box">
+                <strong>✅ Logged In</strong>
+                Submit your Google Drive video URLs below
             </div>
 
             <div class="form-group">
-                <label for="videoUrl">Video URL from Platform A</label>
+                <label for="videoUrl">Google Drive Video URL</label>
                 <input type="url" id="videoUrl" 
-                    placeholder="Paste any YouTube, Google Drive, Vimeo, or Dailymotion URL..." 
+                    placeholder="https://drive.google.com/file/d/FILE_ID/view" 
                     onkeypress="handleEnter(event)">
                 <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">
-                    Examples:<br>
-                    • https://www.youtube.com/watch?v=VIDEO_ID<br>
-                    • https://drive.google.com/file/d/FILE_ID/view<br>
-                    • https://vimeo.com/VIDEO_ID
+                    Example: https://drive.google.com/file/d/1ABC123xyz/view
                 </small>
             </div>
             <button onclick="submitVideo()" id="submitBtn">Generate Secure URL</button>
@@ -273,7 +202,6 @@
             <div id="resultSection" class="hidden">
                 <div class="result">
                     <div class="result-label">✅ Platform B Video URL Generated</div>
-                    <span class="result-type" id="videoType"></span>
                     <div class="result-url" id="resultUrl"></div>
                     <button class="copy-btn" onclick="copyResultUrl()">Copy URL</button>
                 </div>
@@ -288,8 +216,7 @@
 
     <script>
         const API_URL = '/api';
-        let sessionId = '';
-        let securityString = '';
+        let credentials = { userId: '', password: '' };
         let generatedVideos = [];
 
         async function login() {
@@ -312,9 +239,7 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    sessionId = data.sessionId;
-                    securityString = data.securityString;
-                    document.getElementById('securityString').textContent = securityString;
+                    credentials = { userId, password };
                     document.getElementById('loginSection').classList.add('hidden');
                     document.getElementById('mainSection').classList.remove('hidden');
                     errorEl.classList.add('hidden');
@@ -337,8 +262,8 @@
                 return;
             }
 
-            if (!isValidUrl(videoUrl)) {
-                showError(errorEl, 'Please enter a valid URL');
+            if (!videoUrl.includes('drive.google.com')) {
+                showError(errorEl, 'Please enter a valid Google Drive URL');
                 return;
             }
 
@@ -349,21 +274,23 @@
                 const response = await fetch(`${API_URL}/submit-video`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sessionId, videoUrl })
+                    body: JSON.stringify({ 
+                        userId: credentials.userId,
+                        password: credentials.password,
+                        videoUrl 
+                    })
                 });
 
                 const data = await response.json();
 
                 if (data.success) {
                     document.getElementById('resultUrl').textContent = data.videoUrl;
-                    document.getElementById('videoType').textContent = `Type: ${data.videoType.toUpperCase()}`;
                     resultSection.classList.remove('hidden');
                     errorEl.classList.add('hidden');
                     
                     generatedVideos.push({
                         originalUrl: videoUrl,
                         platformBUrl: data.videoUrl,
-                        videoType: data.videoType,
                         timestamp: new Date().toLocaleString()
                     });
                     updateVideoList();
@@ -393,7 +320,6 @@
             contentEl.innerHTML = generatedVideos.map((video, index) => `
                 <div class="video-item">
                     <strong>URL ${index + 1}</strong>
-                    <span class="info-badge">${video.videoType}</span>
                     <span class="info-badge">${video.timestamp}</span>
                     <div style="margin-top: 8px; font-size: 11px; color: #666;">
                         ${truncateUrl(video.platformBUrl)}
@@ -409,23 +335,9 @@
             return url;
         }
 
-        function isValidUrl(string) {
-            try {
-                new URL(string);
-                return true;
-            } catch (_) {
-                return false;
-            }
-        }
-
         function showError(element, message) {
             element.textContent = message;
             element.classList.remove('hidden');
-        }
-
-        function copySecurityString() {
-            navigator.clipboard.writeText(securityString);
-            alert('Security string copied to clipboard!');
         }
 
         function copyResultUrl() {
