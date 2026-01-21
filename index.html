@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Platform B - Video URL Generator</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .security-section {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .security-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .security-string {
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            border: 2px solid #e0e0e0;
+            margin-bottom: 10px;
+        }
+        .warning {
+            background: #fff3cd;
+            padding: 12px;
+            border-radius: 6px;
+            color: #856404;
+            font-size: 13px;
+            border-left: 4px solid #ffc107;
+            margin-top: 10px;
+        }
+        .info-box {
+            background: #e3f2fd;
+            padding: 12px;
+            border-radius: 6px;
+            color: #1565c0;
+            font-size: 13px;
+            border-left: 4px solid #2196f3;
+            margin-bottom: 20px;
+        }
+        .result {
+            background: #e8f5e9;
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 20px;
+            border-left: 4px solid #4caf50;
+        }
+        .result-label {
+            font-weight: 600;
+            color: #2e7d32;
+            margin-bottom: 8px;
+        }
+        .result-url {
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #333;
+            background: white;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 8px;
+        }
+        .result-type {
+            display: inline-block;
+            background: #4caf50;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-top: 8px;
+        }
+        .error {
+            background: #ffebee;
+            padding: 12px;
+            border-radius: 8px;
+            color: #c62828;
+            margin-top: 10px;
+            font-size: 14px;
+        }
+        .hidden {
+            display: none;
+        }
+        .copy-btn {
+            margin-top: 10px;
+            width: auto;
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+        .video-list {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 2px solid #e0e0e0;
+        }
+        .video-item {
+            background: #f9f9f9;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            font-size: 13px;
+        }
+        .video-item strong {
+            color: #667eea;
+        }
+        .info-badge {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+        .supported-platforms {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .supported-platforms h4 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        .platform-tag {
+            display: inline-block;
+            background: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            margin: 4px;
+            font-size: 12px;
+            border: 1px solid #e0e0e0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Platform B</h1>
+        <p class="subtitle">Secure Video URL Generator</p>
+        
+        <div id="loginSection">
+            <div class="info-box">
+                ℹ️ <strong>Supported Platforms:</strong> YouTube, Google Drive, Vimeo, Dailymotion, and more!
+            </div>
+            
+            <div class="form-group">
+                <label for="userId">User ID</label>
+                <input type="text" id="userId" placeholder="Enter your user ID">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" placeholder="Enter your password">
+            </div>
+            <button onclick="login()">Login</button>
+            <div id="loginError" class="error hidden"></div>
+        </div>
+
+        <div id="mainSection" class="hidden">
+            <div class="security-section">
+                <div class="security-title">🔐 Your Security String</div>
+                <div class="security-string" id="securityString"></div>
+                <button class="copy-btn" onclick="copySecurityString()">Copy Security String</button>
+                <div class="warning">
+                    ⚠️ Keep this security string safe! You'll need it to configure Platform C.
+                </div>
+            </div>
+
+            <div class="supported-platforms">
+                <h4>✅ Supported Video Platforms:</h4>
+                <span class="platform-tag">🎥 YouTube</span>
+                <span class="platform-tag">📁 Google Drive</span>
+                <span class="platform-tag">🎬 Vimeo</span>
+                <span class="platform-tag">📺 Dailymotion</span>
+                <span class="platform-tag">🌐 Direct URLs</span>
+            </div>
+
+            <div class="form-group">
+                <label for="videoUrl">Video URL from Platform A</label>
+                <input type="url" id="videoUrl" 
+                    placeholder="Paste any YouTube, Google Drive, Vimeo, or Dailymotion URL..." 
+                    onkeypress="handleEnter(event)">
+                <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">
+                    Examples:<br>
+                    • https://www.youtube.com/watch?v=VIDEO_ID<br>
+                    • https://drive.google.com/file/d/FILE_ID/view<br>
+                    • https://vimeo.com/VIDEO_ID
+                </small>
+            </div>
+            <button onclick="submitVideo()" id="submitBtn">Generate Secure URL</button>
+            <div id="submitError" class="error hidden"></div>
+
+            <div id="resultSection" class="hidden">
+                <div class="result">
+                    <div class="result-label">✅ Platform B Video URL Generated</div>
+                    <span class="result-type" id="videoType"></span>
+                    <div class="result-url" id="resultUrl"></div>
+                    <button class="copy-btn" onclick="copyResultUrl()">Copy URL</button>
+                </div>
+            </div>
+
+            <div id="videoList" class="video-list hidden">
+                <h3 style="margin-bottom: 15px; color: #333; font-size: 16px;">Your Generated URLs</h3>
+                <div id="videoListContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = '/api';
+        let sessionId = '';
+        let securityString = '';
+        let generatedVideos = [];
+
+        async function login() {
+            const userId = document.getElementById('userId').value.trim();
+            const password = document.getElementById('password').value;
+            const errorEl = document.getElementById('loginError');
+
+            if (!userId || !password) {
+                showError(errorEl, 'Please enter both user ID and password');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId, password })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    sessionId = data.sessionId;
+                    securityString = data.securityString;
+                    document.getElementById('securityString').textContent = securityString;
+                    document.getElementById('loginSection').classList.add('hidden');
+                    document.getElementById('mainSection').classList.remove('hidden');
+                    errorEl.classList.add('hidden');
+                } else {
+                    showError(errorEl, data.message || 'Login failed');
+                }
+            } catch (error) {
+                showError(errorEl, 'Error: ' + error.message);
+            }
+        }
+
+        async function submitVideo() {
+            const videoUrl = document.getElementById('videoUrl').value.trim();
+            const errorEl = document.getElementById('submitError');
+            const resultSection = document.getElementById('resultSection');
+            const submitBtn = document.getElementById('submitBtn');
+
+            if (!videoUrl) {
+                showError(errorEl, 'Please enter a video URL');
+                return;
+            }
+
+            if (!isValidUrl(videoUrl)) {
+                showError(errorEl, 'Please enter a valid URL');
+                return;
+            }
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Generating...';
+
+            try {
+                const response = await fetch(`${API_URL}/submit-video`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId, videoUrl })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('resultUrl').textContent = data.videoUrl;
+                    document.getElementById('videoType').textContent = `Type: ${data.videoType.toUpperCase()}`;
+                    resultSection.classList.remove('hidden');
+                    errorEl.classList.add('hidden');
+                    
+                    generatedVideos.push({
+                        originalUrl: videoUrl,
+                        platformBUrl: data.videoUrl,
+                        videoType: data.videoType,
+                        timestamp: new Date().toLocaleString()
+                    });
+                    updateVideoList();
+                    
+                    document.getElementById('videoUrl').value = '';
+                } else {
+                    showError(errorEl, data.message || 'Submission failed');
+                }
+            } catch (error) {
+                showError(errorEl, 'Error: ' + error.message);
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Generate Secure URL';
+            }
+        }
+
+        function updateVideoList() {
+            const listEl = document.getElementById('videoList');
+            const contentEl = document.getElementById('videoListContent');
+            
+            if (generatedVideos.length === 0) {
+                listEl.classList.add('hidden');
+                return;
+            }
+            
+            listEl.classList.remove('hidden');
+            contentEl.innerHTML = generatedVideos.map((video, index) => `
+                <div class="video-item">
+                    <strong>URL ${index + 1}</strong>
+                    <span class="info-badge">${video.videoType}</span>
+                    <span class="info-badge">${video.timestamp}</span>
+                    <div style="margin-top: 8px; font-size: 11px; color: #666;">
+                        ${truncateUrl(video.platformBUrl)}
+                    </div>
+                </div>
+            `).reverse().join('');
+        }
+
+        function truncateUrl(url) {
+            if (url.length > 60) {
+                return url.substring(0, 57) + '...';
+            }
+            return url;
+        }
+
+        function isValidUrl(string) {
+            try {
+                new URL(string);
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function showError(element, message) {
+            element.textContent = message;
+            element.classList.remove('hidden');
+        }
+
+        function copySecurityString() {
+            navigator.clipboard.writeText(securityString);
+            alert('Security string copied to clipboard!');
+        }
+
+        function copyResultUrl() {
+            const url = document.getElementById('resultUrl').textContent;
+            navigator.clipboard.writeText(url);
+            alert('URL copied to clipboard!');
+        }
+
+        function handleEnter(event) {
+            if (event.key === 'Enter') {
+                submitVideo();
+            }
+        }
+
+        document.getElementById('userId').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') login();
+        });
+        document.getElementById('password').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') login();
+        });
+    </script>
+</body>
+</html>
