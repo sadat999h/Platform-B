@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
+import fetch from 'node-fetch';
 
 const app = express();
 app.use(cors());
@@ -28,7 +29,7 @@ setInterval(() => {
   }
 }, 3600000);
 
-// Helper function to convert URLs to embeddable format
+// Helper function to convert URLs to direct/embeddable format
 function convertToEmbeddableUrl(url) {
   try {
     const urlObj = new URL(url);
@@ -48,9 +49,11 @@ function convertToEmbeddableUrl(url) {
       
       if (videoId) {
         return {
-          url: `https://www.youtube.com/embed/${videoId}`,
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          embeddableUrl: `https://www.youtube.com/embed/${videoId}`,
           type: 'youtube',
-          videoId: videoId
+          videoId: videoId,
+          needsProxy: true
         };
       }
     }
@@ -71,8 +74,10 @@ function convertToEmbeddableUrl(url) {
       if (fileId) {
         return {
           url: `https://drive.google.com/file/d/${fileId}/preview`,
+          embeddableUrl: `https://drive.google.com/file/d/${fileId}/preview`,
           type: 'gdrive',
-          fileId: fileId
+          videoId: fileId,
+          needsProxy: false
         };
       }
     }
@@ -83,8 +88,10 @@ function convertToEmbeddableUrl(url) {
       if (videoId) {
         return {
           url: `https://player.vimeo.com/video/${videoId}`,
+          embeddableUrl: `https://player.vimeo.com/video/${videoId}`,
           type: 'vimeo',
-          videoId: videoId
+          videoId: videoId,
+          needsProxy: false
         };
       }
     }
@@ -95,23 +102,40 @@ function convertToEmbeddableUrl(url) {
       if (videoId) {
         return {
           url: `https://www.dailymotion.com/embed/video/${videoId}`,
+          embeddableUrl: `https://www.dailymotion.com/embed/video/${videoId}`,
           type: 'dailymotion',
-          videoId: videoId
+          videoId: videoId,
+          needsProxy: false
         };
       }
     }
     
-    // Default: return as-is if already embeddable or unknown
+    // Direct video URLs (mp4, webm, etc.)
+    if (url.match(/\.(mp4|webm|ogg|mov)(\?|$)/i)) {
+      return {
+        url: url,
+        embeddableUrl: url,
+        type: 'direct',
+        videoId: null,
+        needsProxy: false
+      };
+    }
+    
+    // Default: return as-is
     return {
       url: url,
+      embeddableUrl: url,
       type: 'other',
-      videoId: null
+      videoId: null,
+      needsProxy: false
     };
   } catch (error) {
     return {
       url: url,
+      embeddableUrl: url,
       type: 'other',
-      videoId: null
+      videoId: null,
+      needsProxy: false
     };
   }
 }
@@ -184,17 +208,15 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Convert URL to embeddable format
     const convertedUrl = convertToEmbeddableUrl(videoUrl);
-    
     const videoId = crypto.randomBytes(16).toString('hex');
     
-    // Store video mapping in Firestore
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
-      embeddableUrl: convertedUrl.url,
+      embeddableUrl: convertedUrl.embeddableUrl,
       videoType: convertedUrl.type,
       platformVideoId: convertedUrl.videoId,
+      needsProxy: convertedUrl.needsProxy,
       securityString: session.securityString,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: session.userId,
@@ -257,7 +279,6 @@ app.get('/api/video/:videoId', async (req, res) => {
       });
     }
     
-    // Update access count
     await db.collection('videos').doc(videoId).update({
       accessCount: admin.firestore.FieldValue.increment(1),
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -268,6 +289,7 @@ app.get('/api/video/:videoId', async (req, res) => {
       embeddableUrl: videoData.embeddableUrl,
       videoType: videoData.videoType,
       platformVideoId: videoData.platformVideoId,
+      needsProxy: videoData.needsProxy || false,
       videoId: videoId
     });
   } catch (error) {
@@ -275,6 +297,54 @@ app.get('/api/video/:videoId', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// Video proxy endpoint for YouTube (streams video without branding)
+app.get('/api/proxy/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const securityString = req.headers['x-security-string'];
+    
+    if (!securityString) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Security string required' 
+      });
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+    
+    const videoData = videoDoc.data();
+    
+    if (videoData.securityString !== securityString) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Invalid security string' 
+      });
+    }
+    
+    // Return video info for client-side handling
+    res.json({
+      success: true,
+      embeddableUrl: videoData.embeddableUrl,
+      videoType: videoData.videoType,
+      platformVideoId: videoData.platformVideoId
+    });
+    
+  } catch (error) {
+    console.error('Proxy error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Proxy error: ' + error.message 
     });
   }
 });
