@@ -15,7 +15,7 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-// In-memory session store (use Redis in production)
+// In-memory session store
 const sessions = new Map();
 
 // Clean up old sessions every hour
@@ -27,6 +27,94 @@ setInterval(() => {
     }
   }
 }, 3600000);
+
+// Helper function to convert URLs to embeddable format
+function convertToEmbeddableUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    
+    // YouTube URLs
+    if (urlObj.hostname.includes('youtube.com') || urlObj.hostname.includes('youtu.be')) {
+      let videoId = '';
+      
+      if (urlObj.hostname.includes('youtu.be')) {
+        videoId = urlObj.pathname.slice(1);
+      } else if (urlObj.searchParams.has('v')) {
+        videoId = urlObj.searchParams.get('v');
+      } else {
+        const match = urlObj.pathname.match(/\/embed\/([^/?]+)/);
+        if (match) videoId = match[1];
+      }
+      
+      if (videoId) {
+        return {
+          url: `https://www.youtube.com/embed/${videoId}`,
+          type: 'youtube',
+          videoId: videoId
+        };
+      }
+    }
+    
+    // Google Drive URLs
+    if (urlObj.hostname.includes('drive.google.com')) {
+      let fileId = '';
+      
+      const matchFile = url.match(/\/file\/d\/([^/?]+)/);
+      const matchOpen = url.match(/[?&]id=([^&]+)/);
+      
+      if (matchFile) {
+        fileId = matchFile[1];
+      } else if (matchOpen) {
+        fileId = matchOpen[1];
+      }
+      
+      if (fileId) {
+        return {
+          url: `https://drive.google.com/file/d/${fileId}/preview`,
+          type: 'gdrive',
+          fileId: fileId
+        };
+      }
+    }
+    
+    // Vimeo URLs
+    if (urlObj.hostname.includes('vimeo.com')) {
+      const videoId = urlObj.pathname.split('/').pop();
+      if (videoId) {
+        return {
+          url: `https://player.vimeo.com/video/${videoId}`,
+          type: 'vimeo',
+          videoId: videoId
+        };
+      }
+    }
+    
+    // Dailymotion URLs
+    if (urlObj.hostname.includes('dailymotion.com')) {
+      const videoId = urlObj.pathname.split('/').pop();
+      if (videoId) {
+        return {
+          url: `https://www.dailymotion.com/embed/video/${videoId}`,
+          type: 'dailymotion',
+          videoId: videoId
+        };
+      }
+    }
+    
+    // Default: return as-is if already embeddable or unknown
+    return {
+      url: url,
+      type: 'other',
+      videoId: null
+    };
+  } catch (error) {
+    return {
+      url: url,
+      type: 'other',
+      videoId: null
+    };
+  }
+}
 
 // Login endpoint
 app.post('/api/login', async (req, res) => {
@@ -41,18 +129,15 @@ app.post('/api/login', async (req, res) => {
     }
     
     if (userId === process.env.ADMIN_USER_ID && password === process.env.ADMIN_PASSWORD) {
-      // Generate unique security string for this session
       const securityString = crypto.randomBytes(32).toString('hex');
       const sessionId = crypto.randomBytes(16).toString('hex');
       
-      // Store session in memory
       sessions.set(sessionId, {
         userId,
         securityString,
         createdAt: Date.now()
       });
       
-      // Also store the security string in Firestore for validation
       await db.collection('security_strings').doc(securityString).set({
         createdBy: userId,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -91,7 +176,6 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Validate session
     const session = sessions.get(sessionId);
     if (!session) {
       return res.status(401).json({ 
@@ -100,25 +184,30 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Generate unique video ID
+    // Convert URL to embeddable format
+    const convertedUrl = convertToEmbeddableUrl(videoUrl);
+    
     const videoId = crypto.randomBytes(16).toString('hex');
     
     // Store video mapping in Firestore
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
+      embeddableUrl: convertedUrl.url,
+      videoType: convertedUrl.type,
+      platformVideoId: convertedUrl.videoId,
       securityString: session.securityString,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: session.userId,
       accessCount: 0
     });
     
-    // Generate Platform B URL
     const platformBUrl = `${process.env.PLATFORM_B_URL}/video/${videoId}`;
     
     res.json({
       success: true,
       videoUrl: platformBUrl,
-      videoId
+      videoId,
+      videoType: convertedUrl.type
     });
   } catch (error) {
     console.error('Submit video error:', error);
@@ -142,7 +231,6 @@ app.get('/api/video/:videoId', async (req, res) => {
       });
     }
     
-    // Validate video exists
     const videoDoc = await db.collection('videos').doc(videoId).get();
     
     if (!videoDoc.exists) {
@@ -154,7 +242,6 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     const videoData = videoDoc.data();
     
-    // Validate security string
     if (videoData.securityString !== securityString) {
       return res.status(403).json({ 
         success: false, 
@@ -162,7 +249,6 @@ app.get('/api/video/:videoId', async (req, res) => {
       });
     }
     
-    // Verify security string is still active
     const securityDoc = await db.collection('security_strings').doc(securityString).get();
     if (!securityDoc.exists || !securityDoc.data().active) {
       return res.status(403).json({ 
@@ -179,54 +265,13 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     res.json({
       success: true,
-      originalUrl: videoData.originalUrl,
+      embeddableUrl: videoData.embeddableUrl,
+      videoType: videoData.videoType,
+      platformVideoId: videoData.platformVideoId,
       videoId: videoId
     });
   } catch (error) {
     console.error('Fetch video error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Server error: ' + error.message 
-    });
-  }
-});
-
-// Get video stats (optional - for admin)
-app.get('/api/stats/:videoId', async (req, res) => {
-  try {
-    const { videoId } = req.params;
-    const sessionId = req.headers['x-session-id'];
-    
-    const session = sessions.get(sessionId);
-    if (!session) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Invalid session' 
-      });
-    }
-    
-    const videoDoc = await db.collection('videos').doc(videoId).get();
-    
-    if (!videoDoc.exists) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Video not found' 
-      });
-    }
-    
-    const videoData = videoDoc.data();
-    
-    res.json({
-      success: true,
-      stats: {
-        videoId,
-        accessCount: videoData.accessCount || 0,
-        createdAt: videoData.createdAt,
-        lastAccessedAt: videoData.lastAccessedAt || null
-      }
-    });
-  } catch (error) {
-    console.error('Stats error:', error);
     res.status(500).json({ 
       success: false, 
       message: 'Server error: ' + error.message 
