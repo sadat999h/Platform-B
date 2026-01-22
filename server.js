@@ -18,44 +18,48 @@ const db = admin.firestore();
 // Single security string from environment
 const MASTER_SECURITY_STRING = process.env.MASTER_SECURITY_STRING;
 
-// Helper function to extract Google Drive file ID and convert to direct stream URL
-function convertGoogleDriveUrl(url) {
+// Helper function to convert Dropbox URLs to direct streaming URLs
+function convertDropboxUrl(url) {
   try {
     const urlObj = new URL(url);
     
-    if (urlObj.hostname.includes('drive.google.com')) {
-      let fileId = '';
+    // Check if it's a Dropbox URL
+    if (urlObj.hostname.includes('dropbox.com')) {
+      let directUrl = url;
       
-      // Extract file ID from various Google Drive URL formats
-      const matchFile = url.match(/\/file\/d\/([^/?]+)/);
-      const matchOpen = url.match(/[?&]id=([^&]+)/);
-      
-      if (matchFile) {
-        fileId = matchFile[1];
-      } else if (matchOpen) {
-        fileId = matchOpen[1];
+      // If it already has raw=1, use as-is
+      if (url.includes('raw=1')) {
+        directUrl = url;
+      }
+      // If it has dl=0, replace with raw=1
+      else if (url.includes('dl=0')) {
+        directUrl = url.replace('dl=0', 'raw=1');
+      }
+      // If it has dl=1, replace with raw=1
+      else if (url.includes('dl=1')) {
+        directUrl = url.replace('dl=1', 'raw=1');
+      }
+      // If no dl parameter, add raw=1
+      else {
+        const separator = url.includes('?') ? '&' : '?';
+        directUrl = url + separator + 'raw=1';
       }
       
-      if (fileId) {
-        return {
-          fileId: fileId,
-          // Direct video stream URL - fastest loading
-          streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
-          // Alternative embed URL
-          embedUrl: `https://drive.google.com/file/d/${fileId}/preview`,
-          type: 'gdrive',
-          success: true
-        };
-      }
+      return {
+        originalUrl: url,
+        streamUrl: directUrl,
+        type: 'dropbox',
+        success: true
+      };
     }
     
-    return { success: false, message: 'Invalid Google Drive URL' };
+    return { success: false, message: 'Invalid Dropbox URL' };
   } catch (error) {
     return { success: false, message: 'Error parsing URL: ' + error.message };
   }
 }
 
-// Login endpoint - simplified
+// Login endpoint
 app.post('/api/login', async (req, res) => {
   try {
     const { userId, password } = req.body;
@@ -107,8 +111,8 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Convert Google Drive URL
-    const converted = convertGoogleDriveUrl(videoUrl);
+    // Convert Dropbox URL
+    const converted = convertDropboxUrl(videoUrl);
     
     if (!converted.success) {
       return res.status(400).json({ 
@@ -123,9 +127,7 @@ app.post('/api/submit-video', async (req, res) => {
     // Store video mapping in Firestore
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
-      fileId: converted.fileId,
       streamUrl: converted.streamUrl,
-      embedUrl: converted.embedUrl,
       videoType: converted.type,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: userId,
@@ -188,12 +190,10 @@ app.get('/api/video/:videoId', async (req, res) => {
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Return video stream URL for fast loading
+    // Return video stream URL for direct playback
     res.json({
       success: true,
       streamUrl: videoData.streamUrl,
-      embedUrl: videoData.embedUrl,
-      fileId: videoData.fileId,
       videoType: videoData.videoType,
       videoId: videoId
     });
