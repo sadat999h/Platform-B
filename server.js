@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
+import fetch from 'node-fetch';
 
 const app = express();
 app.use(cors());
@@ -151,7 +152,7 @@ app.post('/api/submit-video', async (req, res) => {
   }
 });
 
-// Fetch video endpoint - requires master security string
+// Fetch video metadata endpoint - requires master security string
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
@@ -190,10 +191,12 @@ app.get('/api/video/:videoId', async (req, res) => {
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Return video stream URL for direct playback
+    // Return proxy URL instead of direct URL to avoid CORS
+    const proxyUrl = `${process.env.PLATFORM_B_URL}/api/stream/${videoId}`;
+    
     res.json({
       success: true,
-      streamUrl: videoData.streamUrl,
+      proxyUrl: proxyUrl,
       videoType: videoData.videoType,
       videoId: videoId
     });
@@ -202,6 +205,84 @@ app.get('/api/video/:videoId', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// Video streaming proxy endpoint - bypasses CORS
+app.get('/api/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const securityString = req.headers['x-security-string'];
+    
+    if (!securityString) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Security string required' 
+      });
+    }
+    
+    // Verify security string
+    if (securityString !== MASTER_SECURITY_STRING) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Invalid security string' 
+      });
+    }
+    
+    // Get video data from Firestore
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+    
+    const videoData = videoDoc.data();
+    const dropboxUrl = videoData.streamUrl;
+    
+    // Handle range requests for video seeking
+    const range = req.headers.range;
+    
+    // Fetch video from Dropbox with range support
+    const headers = {
+      'User-Agent': 'Mozilla/5.0'
+    };
+    
+    if (range) {
+      headers['Range'] = range;
+    }
+    
+    const response = await fetch(dropboxUrl, { headers });
+    
+    // Set appropriate headers
+    res.setHeader('Content-Type', response.headers.get('content-type') || 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    
+    if (range) {
+      const contentRange = response.headers.get('content-range');
+      const contentLength = response.headers.get('content-length');
+      
+      if (contentRange) res.setHeader('Content-Range', contentRange);
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+      
+      res.status(206); // Partial content
+    } else {
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+    }
+    
+    // Stream the video
+    response.body.pipe(res);
+    
+  } catch (error) {
+    console.error('Stream error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Stream error: ' + error.message 
     });
   }
 });
