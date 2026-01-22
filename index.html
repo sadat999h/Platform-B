@@ -24,7 +24,7 @@
             border-radius: 16px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             padding: 40px;
-            max-width: 600px;
+            max-width: 700px;
             width: 100%;
         }
         h1 {
@@ -47,7 +47,7 @@
             font-weight: 500;
             font-size: 14px;
         }
-        input {
+        input, select {
             width: 100%;
             padding: 12px 16px;
             border: 2px solid #e0e0e0;
@@ -55,9 +55,13 @@
             font-size: 14px;
             transition: border-color 0.3s;
         }
-        input:focus {
+        input:focus, select:focus {
             outline: none;
             border-color: #667eea;
+        }
+        select {
+            cursor: pointer;
+            background: white;
         }
         button {
             width: 100%;
@@ -80,6 +84,38 @@
             cursor: not-allowed;
             transform: none;
         }
+        .platform-selector {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .platform-option {
+            padding: 12px 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: white;
+        }
+        .platform-option:hover {
+            border-color: #667eea;
+            background: #f5f5ff;
+        }
+        .platform-option.selected {
+            border-color: #667eea;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .platform-icon {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        .platform-name {
+            font-size: 11px;
+            font-weight: 600;
+        }
         .info-box {
             background: #e3f2fd;
             padding: 15px;
@@ -92,12 +128,6 @@
         .info-box strong {
             display: block;
             margin-bottom: 5px;
-        }
-        .info-box code {
-            background: rgba(0,0,0,0.1);
-            padding: 2px 6px;
-            border-radius: 3px;
-            font-size: 12px;
         }
         .result {
             background: #e8f5e9;
@@ -162,23 +192,17 @@
             font-size: 11px;
             margin-left: 8px;
         }
-        .dropbox-icon {
-            font-size: 40px;
-            text-align: center;
-            margin-bottom: 10px;
-        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="dropbox-icon">📦</div>
-        <h1>Platform B</h1>
-        <p class="subtitle">Dropbox Video URL Generator</p>
+        <h1>🎬 Platform B</h1>
+        <p class="subtitle">Multi-Platform Video URL Generator</p>
         
         <div id="loginSection">
             <div class="info-box">
-                <strong>📦 Dropbox Videos Only</strong>
-                Paste your Dropbox video share link. The system will automatically convert it to a direct streaming URL.
+                <strong>🌐 Multi-Platform Support</strong>
+                Supports Dropbox, Google Drive, YouTube, Vimeo, and Dailymotion
             </div>
             
             <div class="form-group">
@@ -196,25 +220,50 @@
         <div id="mainSection" class="hidden">
             <div class="info-box">
                 <strong>✅ Logged In</strong>
-                Submit your Dropbox video URLs below
+                Select platform and submit your video URL
             </div>
 
             <div class="form-group">
-                <label for="videoUrl">Dropbox Video URL</label>
+                <label>Select Platform</label>
+                <div class="platform-selector">
+                    <div class="platform-option selected" onclick="selectPlatform('dropbox')" data-platform="dropbox">
+                        <div class="platform-icon">📦</div>
+                        <div class="platform-name">Dropbox</div>
+                    </div>
+                    <div class="platform-option" onclick="selectPlatform('gdrive')" data-platform="gdrive">
+                        <div class="platform-icon">📁</div>
+                        <div class="platform-name">GDrive</div>
+                    </div>
+                    <div class="platform-option" onclick="selectPlatform('youtube')" data-platform="youtube">
+                        <div class="platform-icon">📺</div>
+                        <div class="platform-name">YouTube</div>
+                    </div>
+                    <div class="platform-option" onclick="selectPlatform('vimeo')" data-platform="vimeo">
+                        <div class="platform-icon">🎬</div>
+                        <div class="platform-name">Vimeo</div>
+                    </div>
+                    <div class="platform-option" onclick="selectPlatform('dailymotion')" data-platform="dailymotion">
+                        <div class="platform-icon">🎥</div>
+                        <div class="platform-name">Daily</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="videoUrl">Video URL</label>
                 <input type="url" id="videoUrl" 
-                    placeholder="https://www.dropbox.com/scl/fi/..." 
+                    placeholder="Paste your video URL here..." 
                     onkeypress="handleEnter(event)">
-                <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">
-                    ✓ Any Dropbox share link works<br>
-                    ✓ System auto-converts to <code>raw=1</code> for streaming
+                <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;" id="platformHint">
+                    📦 Dropbox: Any share link works
                 </small>
             </div>
-            <button onclick="submitVideo()" id="submitBtn">Generate Secure URL</button>
+            <button onclick="submitVideo()" id="submitBtn">Generate Encrypted URL</button>
             <div id="submitError" class="error hidden"></div>
 
             <div id="resultSection" class="hidden">
                 <div class="result">
-                    <div class="result-label">✅ Platform B Video URL Generated</div>
+                    <div class="result-label">✅ Encrypted Video URL Generated</div>
                     <div class="result-url" id="resultUrl"></div>
                     <button class="copy-btn" onclick="copyResultUrl()">Copy URL</button>
                 </div>
@@ -230,7 +279,25 @@
     <script>
         const API_URL = '/api';
         let credentials = { userId: '', password: '' };
+        let selectedPlatform = 'dropbox';
         let generatedVideos = [];
+
+        const platformHints = {
+            dropbox: '📦 Dropbox: Any share link works',
+            gdrive: '📁 Google Drive: Make sure video is public',
+            youtube: '📺 YouTube: Any YouTube video URL',
+            vimeo: '🎬 Vimeo: Any Vimeo video URL',
+            dailymotion: '🎥 Dailymotion: Any Dailymotion video URL'
+        };
+
+        function selectPlatform(platform) {
+            selectedPlatform = platform;
+            document.querySelectorAll('.platform-option').forEach(el => {
+                el.classList.remove('selected');
+            });
+            document.querySelector(\`[data-platform="\${platform}"]\`).classList.add('selected');
+            document.getElementById('platformHint').textContent = platformHints[platform];
+        }
 
         async function login() {
             const userId = document.getElementById('userId').value.trim();
@@ -243,7 +310,7 @@
             }
 
             try {
-                const response = await fetch(`${API_URL}/login`, {
+                const response = await fetch(\`\${API_URL}/login\`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ userId, password })
@@ -275,22 +342,18 @@
                 return;
             }
 
-            if (!videoUrl.includes('dropbox.com')) {
-                showError(errorEl, 'Please enter a valid Dropbox URL');
-                return;
-            }
-
             submitBtn.disabled = true;
             submitBtn.textContent = 'Generating...';
 
             try {
-                const response = await fetch(`${API_URL}/submit-video`, {
+                const response = await fetch(\`\${API_URL}/submit-video\`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         userId: credentials.userId,
                         password: credentials.password,
-                        videoUrl 
+                        videoUrl,
+                        platform: selectedPlatform
                     })
                 });
 
@@ -304,6 +367,7 @@
                     generatedVideos.push({
                         originalUrl: videoUrl,
                         platformBUrl: data.videoUrl,
+                        platform: selectedPlatform,
                         timestamp: new Date().toLocaleString()
                     });
                     updateVideoList();
@@ -316,7 +380,7 @@
                 showError(errorEl, 'Error: ' + error.message);
             } finally {
                 submitBtn.disabled = false;
-                submitBtn.textContent = 'Generate Secure URL';
+                submitBtn.textContent = 'Generate Encrypted URL';
             }
         }
 
@@ -330,15 +394,16 @@
             }
             
             listEl.classList.remove('hidden');
-            contentEl.innerHTML = generatedVideos.map((video, index) => `
+            contentEl.innerHTML = generatedVideos.map((video, index) => \`
                 <div class="video-item">
-                    <strong>URL ${index + 1}</strong>
-                    <span class="info-badge">${video.timestamp}</span>
+                    <strong>URL \${index + 1}</strong>
+                    <span class="info-badge">\${video.platform}</span>
+                    <span class="info-badge">\${video.timestamp}</span>
                     <div style="margin-top: 8px; font-size: 11px; color: #666;">
-                        ${truncateUrl(video.platformBUrl)}
+                        \${truncateUrl(video.platformBUrl)}
                     </div>
                 </div>
-            `).reverse().join('');
+            \`).reverse().join('');
         }
 
         function truncateUrl(url) {
