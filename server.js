@@ -19,44 +19,113 @@ const db = admin.firestore();
 // Single security string from environment
 const MASTER_SECURITY_STRING = process.env.MASTER_SECURITY_STRING;
 
-// Helper function to convert Dropbox URLs to direct streaming URLs
+// Platform-specific URL converters
 function convertDropboxUrl(url) {
   try {
-    const urlObj = new URL(url);
+    let directUrl = url;
+    if (url.includes('raw=1')) {
+      directUrl = url;
+    } else if (url.includes('dl=0')) {
+      directUrl = url.replace('dl=0', 'raw=1');
+    } else if (url.includes('dl=1')) {
+      directUrl = url.replace('dl=1', 'raw=1');
+    } else {
+      const separator = url.includes('?') ? '&' : '?';
+      directUrl = url + separator + 'raw=1';
+    }
+    return { streamUrl: directUrl, success: true };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertGoogleDriveUrl(url) {
+  try {
+    let fileId = '';
+    const matchFile = url.match(/\/file\/d\/([^/?]+)/);
+    const matchOpen = url.match(/[?&]id=([^&]+)/);
     
-    // Check if it's a Dropbox URL
-    if (urlObj.hostname.includes('dropbox.com')) {
-      let directUrl = url;
-      
-      // If it already has raw=1, use as-is
-      if (url.includes('raw=1')) {
-        directUrl = url;
-      }
-      // If it has dl=0, replace with raw=1
-      else if (url.includes('dl=0')) {
-        directUrl = url.replace('dl=0', 'raw=1');
-      }
-      // If it has dl=1, replace with raw=1
-      else if (url.includes('dl=1')) {
-        directUrl = url.replace('dl=1', 'raw=1');
-      }
-      // If no dl parameter, add raw=1
-      else {
-        const separator = url.includes('?') ? '&' : '?';
-        directUrl = url + separator + 'raw=1';
-      }
-      
-      return {
-        originalUrl: url,
-        streamUrl: directUrl,
-        type: 'dropbox',
-        success: true
-      };
+    if (matchFile) {
+      fileId = matchFile[1];
+    } else if (matchOpen) {
+      fileId = matchOpen[1];
     }
     
-    return { success: false, message: 'Invalid Dropbox URL' };
+    if (fileId) {
+      // Use direct download URL for better streaming
+      return { 
+        streamUrl: \`https://drive.google.com/uc?export=download&id=\${fileId}\`,
+        fileId: fileId,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Google Drive URL' };
   } catch (error) {
-    return { success: false, message: 'Error parsing URL: ' + error.message };
+    return { success: false, message: error.message };
+  }
+}
+
+function convertYouTubeUrl(url) {
+  try {
+    let videoId = '';
+    const urlObj = new URL(url);
+    
+    if (urlObj.hostname.includes('youtu.be')) {
+      videoId = urlObj.pathname.slice(1);
+    } else if (urlObj.searchParams.has('v')) {
+      videoId = urlObj.searchParams.get('v');
+    } else {
+      const match = urlObj.pathname.match(/\/embed\/([^/?]+)/);
+      if (match) videoId = match[1];
+    }
+    
+    if (videoId) {
+      return { 
+        streamUrl: \`https://www.youtube.com/embed/\${videoId}?autoplay=0&controls=0&modestbranding=1\`,
+        videoId: videoId,
+        useIframe: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid YouTube URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertVimeoUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(p => p)[0];
+    if (videoId) {
+      return { 
+        streamUrl: \`https://player.vimeo.com/video/\${videoId}?title=0&byline=0&portrait=0\`,
+        videoId: videoId,
+        useIframe: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Vimeo URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertDailymotionUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(p => p && p !== 'video')[0];
+    if (videoId) {
+      return { 
+        streamUrl: \`https://www.dailymotion.com/embed/video/\${videoId}\`,
+        videoId: videoId,
+        useIframe: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Dailymotion URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
   }
 }
 
@@ -92,10 +161,10 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Submit video URL endpoint
+// Submit video URL endpoint with platform selection
 app.post('/api/submit-video', async (req, res) => {
   try {
-    const { userId, password, videoUrl } = req.body;
+    const { userId, password, videoUrl, platform } = req.body;
     
     // Verify credentials
     if (userId !== process.env.ADMIN_USER_ID || password !== process.env.ADMIN_PASSWORD) {
@@ -105,15 +174,38 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    if (!videoUrl) {
+    if (!videoUrl || !platform) {
       return res.status(400).json({ 
         success: false, 
-        message: 'Video URL is required' 
+        message: 'Video URL and platform are required' 
       });
     }
     
-    // Convert Dropbox URL
-    const converted = convertDropboxUrl(videoUrl);
+    // Convert URL based on platform
+    let converted;
+    switch(platform.toLowerCase()) {
+      case 'dropbox':
+        converted = convertDropboxUrl(videoUrl);
+        break;
+      case 'gdrive':
+      case 'google-drive':
+        converted = convertGoogleDriveUrl(videoUrl);
+        break;
+      case 'youtube':
+        converted = convertYouTubeUrl(videoUrl);
+        break;
+      case 'vimeo':
+        converted = convertVimeoUrl(videoUrl);
+        break;
+      case 'dailymotion':
+        converted = convertDailymotionUrl(videoUrl);
+        break;
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Unsupported platform' 
+        });
+    }
     
     if (!converted.success) {
       return res.status(400).json({ 
@@ -129,19 +221,22 @@ app.post('/api/submit-video', async (req, res) => {
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
       streamUrl: converted.streamUrl,
-      videoType: converted.type,
+      platform: platform.toLowerCase(),
+      useIframe: converted.useIframe || false,
+      platformVideoId: converted.videoId || converted.fileId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: userId,
       accessCount: 0
     });
     
-    // Generate Platform B URL
-    const platformBUrl = `${process.env.PLATFORM_B_URL}/video/${videoId}`;
+    // Generate encrypted Platform B URL
+    const platformBUrl = \`\${process.env.PLATFORM_B_URL}/video/\${videoId}\`;
     
     res.json({
       success: true,
       videoUrl: platformBUrl,
-      videoId
+      videoId,
+      platform: platform.toLowerCase()
     });
   } catch (error) {
     console.error('Submit video error:', error);
@@ -152,28 +247,19 @@ app.post('/api/submit-video', async (req, res) => {
   }
 });
 
-// Fetch video metadata endpoint - requires master security string
+// Fetch video metadata
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
     const securityString = req.headers['x-security-string'];
     
-    if (!securityString) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Security string required' 
-      });
-    }
-    
-    // Verify security string
-    if (securityString !== MASTER_SECURITY_STRING) {
+    if (!securityString || securityString !== MASTER_SECURITY_STRING) {
       return res.status(403).json({ 
         success: false, 
         message: 'Invalid security string' 
       });
     }
     
-    // Get video data from Firestore
     const videoDoc = await db.collection('videos').doc(videoId).get();
     
     if (!videoDoc.exists) {
@@ -191,15 +277,26 @@ app.get('/api/video/:videoId', async (req, res) => {
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Return proxy URL instead of direct URL to avoid CORS
-    const proxyUrl = `${process.env.PLATFORM_B_URL}/api/stream/${videoId}`;
-    
-    res.json({
-      success: true,
-      proxyUrl: proxyUrl,
-      videoType: videoData.videoType,
-      videoId: videoId
-    });
+    // Return appropriate URL based on platform
+    if (videoData.useIframe) {
+      // For YouTube, Vimeo, Dailymotion - return direct embed URL
+      res.json({
+        success: true,
+        streamUrl: videoData.streamUrl,
+        platform: videoData.platform,
+        useIframe: true,
+        videoId: videoId
+      });
+    } else {
+      // For Dropbox, GDrive - return proxy URL for fast streaming
+      res.json({
+        success: true,
+        proxyUrl: \`\${process.env.PLATFORM_B_URL}/api/stream/\${videoId}\`,
+        platform: videoData.platform,
+        useIframe: false,
+        videoId: videoId
+      });
+    }
   } catch (error) {
     console.error('Fetch video error:', error);
     res.status(500).json({ 
@@ -209,81 +306,84 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Video streaming proxy endpoint - bypasses CORS
+// Fast streaming proxy with range support for large files
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
     const securityString = req.headers['x-security-string'];
     
-    if (!securityString) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Security string required' 
-      });
+    if (!securityString || securityString !== MASTER_SECURITY_STRING) {
+      return res.status(403).send('Forbidden');
     }
     
-    // Verify security string
-    if (securityString !== MASTER_SECURITY_STRING) {
-      return res.status(403).json({ 
-        success: false, 
-        message: 'Invalid security string' 
-      });
-    }
-    
-    // Get video data from Firestore
     const videoDoc = await db.collection('videos').doc(videoId).get();
     
     if (!videoDoc.exists) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Video not found' 
-      });
+      return res.status(404).send('Not Found');
     }
     
     const videoData = videoDoc.data();
-    const dropboxUrl = videoData.streamUrl;
+    const sourceUrl = videoData.streamUrl;
     
-    // Handle range requests for video seeking
+    // Handle range requests for seeking (critical for large files)
     const range = req.headers.range;
     
-    // Fetch video from Dropbox with range support
     const headers = {
-      'User-Agent': 'Mozilla/5.0'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     };
     
     if (range) {
       headers['Range'] = range;
     }
     
-    const response = await fetch(dropboxUrl, { headers });
-    
-    // Set appropriate headers
-    res.setHeader('Content-Type', response.headers.get('content-type') || 'video/mp4');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
-    
-    if (range) {
+    try {
+      const response = await fetch(sourceUrl, { 
+        headers,
+        redirect: 'follow'
+      });
+      
+      if (!response.ok) {
+        return res.status(response.status).send('Source Error');
+      }
+      
+      // Set CORS headers
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, X-Security-String');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+      
+      // Copy essential headers from source
+      const contentType = response.headers.get('content-type');
+      const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
-      const contentLength = response.headers.get('content-length');
+      const acceptRanges = response.headers.get('accept-ranges');
       
+      if (contentType) res.setHeader('Content-Type', contentType);
+      if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
-      if (contentLength) res.setHeader('Content-Length', contentLength);
+      if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
       
-      res.status(206); // Partial content
-    } else {
-      const contentLength = response.headers.get('content-length');
-      if (contentLength) res.setHeader('Content-Length', contentLength);
+      // Enable caching for better performance
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      
+      // Set status code
+      if (range && response.status === 206) {
+        res.status(206);
+      } else {
+        res.status(200);
+      }
+      
+      // Stream the response directly (no buffering for speed)
+      response.body.pipe(res);
+      
+    } catch (fetchError) {
+      console.error('Fetch error:', fetchError);
+      res.status(500).send('Stream Error');
     }
-    
-    // Stream the video
-    response.body.pipe(res);
     
   } catch (error) {
     console.error('Stream error:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Stream error: ' + error.message 
-    });
+    res.status(500).send('Server Error');
   }
 });
 
@@ -315,6 +415,7 @@ app.get('/api/stats/:videoId', async (req, res) => {
       success: true,
       stats: {
         videoId,
+        platform: videoData.platform,
         accessCount: videoData.accessCount || 0,
         createdAt: videoData.createdAt,
         lastAccessedAt: videoData.lastAccessedAt || null
@@ -346,7 +447,7 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Platform B running on port ${PORT}`);
+  console.log(\`Platform B running on port \${PORT}\`);
 });
 
 export default app;
