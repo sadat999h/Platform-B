@@ -292,10 +292,13 @@
 
         function selectPlatform(platform) {
             selectedPlatform = platform;
-            document.querySelectorAll('.platform-option').forEach(el => {
+            document.querySelectorAll('.platform-option').forEach(function(el) {
                 el.classList.remove('selected');
             });
-            document.querySelector(\`[data-platform="\${platform}"]\`).classList.add('selected');
+            const selectedEl = document.querySelector('[data-platform="' + platform + '"]');
+            if (selectedEl) {
+                selectedEl.classList.add('selected');
+            }
             document.getElementById('platformHint').textContent = platformHints[platform];
         }
 
@@ -310,16 +313,16 @@
             }
 
             try {
-                const response = await fetch(\`\${API_URL}/login\`, {
+                const response = await fetch(API_URL + '/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ userId, password })
+                    body: JSON.stringify({ userId: userId, password: password })
                 });
 
                 const data = await response.json();
 
                 if (data.success) {
-                    credentials = { userId, password };
+                    credentials = { userId: userId, password: password };
                     document.getElementById('loginSection').classList.add('hidden');
                     document.getElementById('mainSection').classList.remove('hidden');
                     errorEl.classList.add('hidden');
@@ -346,13 +349,13 @@
             submitBtn.textContent = 'Generating...';
 
             try {
-                const response = await fetch(\`\${API_URL}/submit-video\`, {
+                const response = await fetch(API_URL + '/submit-video', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
                         userId: credentials.userId,
                         password: credentials.password,
-                        videoUrl,
+                        videoUrl: videoUrl,
                         platform: selectedPlatform
                     })
                 });
@@ -394,16 +397,19 @@
             }
             
             listEl.classList.remove('hidden');
-            contentEl.innerHTML = generatedVideos.map((video, index) => \`
-                <div class="video-item">
-                    <strong>URL \${index + 1}</strong>
-                    <span class="info-badge">\${video.platform}</span>
-                    <span class="info-badge">\${video.timestamp}</span>
-                    <div style="margin-top: 8px; font-size: 11px; color: #666;">
-                        \${truncateUrl(video.platformBUrl)}
-                    </div>
-                </div>
-            \`).reverse().join('');
+            let html = '';
+            for (let i = generatedVideos.length - 1; i >= 0; i--) {
+                const video = generatedVideos[i];
+                const index = generatedVideos.length - i;
+                html += '<div class="video-item">';
+                html += '<strong>URL ' + index + '</strong>';
+                html += '<span class="info-badge">' + video.platform + '</span>';
+                html += '<span class="info-badge">' + video.timestamp + '</span>';
+                html += '<div style="margin-top: 8px; font-size: 11px; color: #666;">';
+                html += truncateUrl(video.platformBUrl);
+                html += '</div></div>';
+            }
+            contentEl.innerHTML = html;
         }
 
         function truncateUrl(url) {
@@ -430,10 +436,10 @@
             }
         }
 
-        document.getElementById('userId').addEventListener('keypress', (e) => {
+        document.getElementById('userId').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') login();
         });
-        document.getElementById('password').addEventListener('keypress', (e) => {
+        document.getElementById('password').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') login();
         });
     </script>
