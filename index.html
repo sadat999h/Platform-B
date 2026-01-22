@@ -93,6 +93,12 @@
             display: block;
             margin-bottom: 5px;
         }
+        .info-box code {
+            background: rgba(0,0,0,0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
         .result {
             background: #e8f5e9;
             padding: 16px;
@@ -156,17 +162,23 @@
             font-size: 11px;
             margin-left: 8px;
         }
+        .dropbox-icon {
+            font-size: 40px;
+            text-align: center;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <div class="dropbox-icon">📦</div>
         <h1>Platform B</h1>
-        <p class="subtitle">Google Drive Video URL Generator</p>
+        <p class="subtitle">Dropbox Video URL Generator</p>
         
         <div id="loginSection">
             <div class="info-box">
-                <strong>📁 Google Drive Only</strong>
-                Make sure your video is set to "Anyone with the link can view"
+                <strong>📦 Dropbox Videos Only</strong>
+                Paste your Dropbox video share link. The system will automatically convert it to a direct streaming URL.
             </div>
             
             <div class="form-group">
@@ -184,16 +196,17 @@
         <div id="mainSection" class="hidden">
             <div class="info-box">
                 <strong>✅ Logged In</strong>
-                Submit your Google Drive video URLs below
+                Submit your Dropbox video URLs below
             </div>
 
             <div class="form-group">
-                <label for="videoUrl">Google Drive Video URL</label>
+                <label for="videoUrl">Dropbox Video URL</label>
                 <input type="url" id="videoUrl" 
-                    placeholder="https://drive.google.com/file/d/FILE_ID/view" 
+                    placeholder="https://www.dropbox.com/scl/fi/..." 
                     onkeypress="handleEnter(event)">
                 <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">
-                    Example: https://drive.google.com/file/d/1ABC123xyz/view
+                    ✓ Any Dropbox share link works<br>
+                    ✓ System auto-converts to <code>raw=1</code> for streaming
                 </small>
             </div>
             <button onclick="submitVideo()" id="submitBtn">Generate Secure URL</button>
@@ -262,8 +275,8 @@
                 return;
             }
 
-            if (!videoUrl.includes('drive.google.com')) {
-                showError(errorEl, 'Please enter a valid Google Drive URL');
+            if (!videoUrl.includes('dropbox.com')) {
+                showError(errorEl, 'Please enter a valid Dropbox URL');
                 return;
             }
 
