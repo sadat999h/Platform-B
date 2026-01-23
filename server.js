@@ -16,7 +16,6 @@ try {
   } else {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     
-    // Only initialize if not already initialized
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
@@ -30,7 +29,6 @@ try {
   console.error('Firebase initialization error:', error.message);
 }
 
-// Single security string from environment
 const MASTER_SECURITY_STRING = process.env.MASTER_SECURITY_STRING;
 
 // Platform-specific URL converters
@@ -174,12 +172,11 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Submit video URL endpoint with platform selection
+// Submit video URL endpoint
 app.post('/api/submit-video', async (req, res) => {
   try {
     const { userId, password, videoUrl, platform } = req.body;
     
-    // Verify credentials
     if (userId !== process.env.ADMIN_USER_ID || password !== process.env.ADMIN_PASSWORD) {
       return res.status(401).json({ 
         success: false, 
@@ -201,7 +198,6 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Convert URL based on platform
     let converted;
     switch(platform.toLowerCase()) {
       case 'dropbox':
@@ -234,10 +230,8 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
-    // Generate unique video ID
     const videoId = crypto.randomBytes(16).toString('hex');
     
-    // Store video mapping in Firestore
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
       streamUrl: converted.streamUrl,
@@ -249,7 +243,6 @@ app.post('/api/submit-video', async (req, res) => {
       accessCount: 0
     });
     
-    // Generate encrypted Platform B URL
     const platformBUrl = `${process.env.PLATFORM_B_URL}/video/${videoId}`;
     
     res.json({
@@ -298,13 +291,11 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     const videoData = videoDoc.data();
     
-    // Update access count
     await db.collection('videos').doc(videoId).update({
       accessCount: admin.firestore.FieldValue.increment(1),
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    // Return appropriate URL based on platform
     if (videoData.useIframe) {
       res.json({
         success: true,
@@ -331,11 +322,11 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Fast streaming proxy with range support for large files
+// OPTIMIZED streaming proxy - direct pipe with range support
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
-    const securityString = req.headers['x-security-string'];
+    const securityString = req.query.key || req.headers['x-security-string'];
     
     if (!securityString || securityString !== MASTER_SECURITY_STRING) {
       return res.status(403).send('Forbidden');
@@ -354,11 +345,11 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const videoData = videoDoc.data();
     const sourceUrl = videoData.streamUrl;
     
-    // Handle range requests for seeking
+    // Handle range requests for fast seeking
     const range = req.headers.range;
     
     const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     };
     
     if (range) {
@@ -372,37 +363,43 @@ app.get('/api/stream/:videoId', async (req, res) => {
       });
       
       if (!response.ok) {
+        console.error('Source error:', response.status, response.statusText);
         return res.status(response.status).send('Source Error');
       }
       
-      // Set CORS headers
+      // CRITICAL: Set CORS headers to allow video tag access
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Range, X-Security-String');
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+      res.setHeader('Access-Control-Allow-Headers', '*');
+      res.setHeader('Access-Control-Expose-Headers', '*');
       
-      // Copy essential headers from source
+      // Copy ALL headers from source
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
       const acceptRanges = response.headers.get('accept-ranges');
       
       if (contentType) res.setHeader('Content-Type', contentType);
+      if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
+      else res.setHeader('Accept-Ranges', 'bytes'); // Force range support
+      
       if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
-      if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
       
-      // Enable caching
-      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      // Enable aggressive caching for speed
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       
-      // Set status code
+      // Set appropriate status
       if (range && response.status === 206) {
         res.status(206);
-      } else {
+      } else if (range && response.status === 200 && contentLength) {
+        // Server doesn't support ranges, but we can fake it
         res.status(200);
+      } else {
+        res.status(response.status);
       }
       
-      // Stream the response directly
+      // CRITICAL: Stream directly - NO buffering!
       response.body.pipe(res);
       
     } catch (fetchError) {
@@ -414,6 +411,15 @@ app.get('/api/stream/:videoId', async (req, res) => {
     console.error('Stream error:', error);
     res.status(500).send('Server Error');
   }
+});
+
+// Handle CORS preflight
+app.options('/api/stream/:videoId', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).send();
 });
 
 // Get video stats
