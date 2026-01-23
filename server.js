@@ -1,4 +1,4 @@
-// server.js – Platform-B (FIXED)
+//server.js Platform B - FIXED
 
 import express from 'express';
 import cors from 'cors';
@@ -66,7 +66,7 @@ function convertGoogleDriveUrl(url) {
     }
     
     if (fileId) {
-      // Use the official Google Drive preview embed format
+      // Use Google Drive's preview endpoint which works better for streaming
       return { 
         streamUrl: `https://drive.google.com/file/d/${fileId}/preview`,
         fileId: fileId,
@@ -349,6 +349,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const videoData = videoDoc.data();
     const sourceUrl = videoData.streamUrl;
     
+    // Handle range requests for fast seeking
     const range = req.headers.range;
     
     const headers = {
@@ -370,11 +371,13 @@ app.get('/api/stream/:videoId', async (req, res) => {
         return res.status(response.status).send('Source Error');
       }
       
+      // CRITICAL: Set CORS headers to allow video tag access
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Expose-Headers', '*');
       
+      // Copy ALL headers from source
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
@@ -387,8 +390,10 @@ app.get('/api/stream/:videoId', async (req, res) => {
       if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
       
+      // Enable aggressive caching for speed
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       
+      // Set appropriate status
       if (range && response.status === 206) {
         res.status(206);
       } else if (range && response.status === 200 && contentLength) {
@@ -397,6 +402,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
         res.status(response.status);
       }
       
+      // CRITICAL: Stream directly - NO buffering!
       response.body.pipe(res);
       
     } catch (fetchError) {
