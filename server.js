@@ -1,3 +1,5 @@
+// server.js – Platform-B (FIXED)
+
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
@@ -64,9 +66,11 @@ function convertGoogleDriveUrl(url) {
     }
     
     if (fileId) {
+      // Use the official Google Drive preview embed format
       return { 
-        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+        streamUrl: `https://drive.google.com/file/d/${fileId}/preview`,
         fileId: fileId,
+        useIframe: true,
         success: true 
       };
     }
@@ -92,7 +96,7 @@ function convertYouTubeUrl(url) {
     
     if (videoId) {
       return { 
-        streamUrl: `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=0&modestbranding=1`,
+        streamUrl: `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1&modestbranding=1`,
         videoId: videoId,
         useIframe: true,
         success: true 
@@ -345,7 +349,6 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const videoData = videoDoc.data();
     const sourceUrl = videoData.streamUrl;
     
-    // Handle range requests for fast seeking
     const range = req.headers.range;
     
     const headers = {
@@ -367,13 +370,11 @@ app.get('/api/stream/:videoId', async (req, res) => {
         return res.status(response.status).send('Source Error');
       }
       
-      // CRITICAL: Set CORS headers to allow video tag access
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Expose-Headers', '*');
       
-      // Copy ALL headers from source
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
@@ -381,25 +382,21 @@ app.get('/api/stream/:videoId', async (req, res) => {
       
       if (contentType) res.setHeader('Content-Type', contentType);
       if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
-      else res.setHeader('Accept-Ranges', 'bytes'); // Force range support
+      else res.setHeader('Accept-Ranges', 'bytes');
       
       if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
       
-      // Enable aggressive caching for speed
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       
-      // Set appropriate status
       if (range && response.status === 206) {
         res.status(206);
       } else if (range && response.status === 200 && contentLength) {
-        // Server doesn't support ranges, but we can fake it
         res.status(200);
       } else {
         res.status(response.status);
       }
       
-      // CRITICAL: Stream directly - NO buffering!
       response.body.pipe(res);
       
     } catch (fetchError) {
