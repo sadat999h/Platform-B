@@ -8,13 +8,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore();
+// Initialize Firebase Admin with error handling
+let db;
+try {
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    console.error('FIREBASE_SERVICE_ACCOUNT not set');
+  } else {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    
+    // Only initialize if not already initialized
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    }
+    
+    db = admin.firestore();
+    console.log('Firebase initialized successfully');
+  }
+} catch (error) {
+  console.error('Firebase initialization error:', error.message);
+}
 
 // Single security string from environment
 const MASTER_SECURITY_STRING = process.env.MASTER_SECURITY_STRING;
@@ -52,9 +66,8 @@ function convertGoogleDriveUrl(url) {
     }
     
     if (fileId) {
-      // Use direct download URL for better streaming
       return { 
-        streamUrl: \`https://drive.google.com/uc?export=download&id=\${fileId}\`,
+        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
         fileId: fileId,
         success: true 
       };
@@ -81,7 +94,7 @@ function convertYouTubeUrl(url) {
     
     if (videoId) {
       return { 
-        streamUrl: \`https://www.youtube.com/embed/\${videoId}?autoplay=0&controls=0&modestbranding=1\`,
+        streamUrl: `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=0&modestbranding=1`,
         videoId: videoId,
         useIframe: true,
         success: true 
@@ -99,7 +112,7 @@ function convertVimeoUrl(url) {
     const videoId = urlObj.pathname.split('/').filter(p => p)[0];
     if (videoId) {
       return { 
-        streamUrl: \`https://player.vimeo.com/video/\${videoId}?title=0&byline=0&portrait=0\`,
+        streamUrl: `https://player.vimeo.com/video/${videoId}?title=0&byline=0&portrait=0`,
         videoId: videoId,
         useIframe: true,
         success: true 
@@ -117,7 +130,7 @@ function convertDailymotionUrl(url) {
     const videoId = urlObj.pathname.split('/').filter(p => p && p !== 'video')[0];
     if (videoId) {
       return { 
-        streamUrl: \`https://www.dailymotion.com/embed/video/\${videoId}\`,
+        streamUrl: `https://www.dailymotion.com/embed/video/${videoId}`,
         videoId: videoId,
         useIframe: true,
         success: true 
@@ -181,6 +194,13 @@ app.post('/api/submit-video', async (req, res) => {
       });
     }
     
+    if (!db) {
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized. Check server configuration.' 
+      });
+    }
+    
     // Convert URL based on platform
     let converted;
     switch(platform.toLowerCase()) {
@@ -230,7 +250,7 @@ app.post('/api/submit-video', async (req, res) => {
     });
     
     // Generate encrypted Platform B URL
-    const platformBUrl = \`\${process.env.PLATFORM_B_URL}/video/\${videoId}\`;
+    const platformBUrl = `${process.env.PLATFORM_B_URL}/video/${videoId}`;
     
     res.json({
       success: true,
@@ -260,6 +280,13 @@ app.get('/api/video/:videoId', async (req, res) => {
       });
     }
     
+    if (!db) {
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized' 
+      });
+    }
+    
     const videoDoc = await db.collection('videos').doc(videoId).get();
     
     if (!videoDoc.exists) {
@@ -279,7 +306,6 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     // Return appropriate URL based on platform
     if (videoData.useIframe) {
-      // For YouTube, Vimeo, Dailymotion - return direct embed URL
       res.json({
         success: true,
         streamUrl: videoData.streamUrl,
@@ -288,10 +314,9 @@ app.get('/api/video/:videoId', async (req, res) => {
         videoId: videoId
       });
     } else {
-      // For Dropbox, GDrive - return proxy URL for fast streaming
       res.json({
         success: true,
-        proxyUrl: \`\${process.env.PLATFORM_B_URL}/api/stream/\${videoId}\`,
+        proxyUrl: `${process.env.PLATFORM_B_URL}/api/stream/${videoId}`,
         platform: videoData.platform,
         useIframe: false,
         videoId: videoId
@@ -316,6 +341,10 @@ app.get('/api/stream/:videoId', async (req, res) => {
       return res.status(403).send('Forbidden');
     }
     
+    if (!db) {
+      return res.status(500).send('Database not initialized');
+    }
+    
     const videoDoc = await db.collection('videos').doc(videoId).get();
     
     if (!videoDoc.exists) {
@@ -325,7 +354,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const videoData = videoDoc.data();
     const sourceUrl = videoData.streamUrl;
     
-    // Handle range requests for seeking (critical for large files)
+    // Handle range requests for seeking
     const range = req.headers.range;
     
     const headers = {
@@ -363,7 +392,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
       if (contentRange) res.setHeader('Content-Range', contentRange);
       if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
       
-      // Enable caching for better performance
+      // Enable caching
       res.setHeader('Cache-Control', 'public, max-age=31536000');
       
       // Set status code
@@ -373,7 +402,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
         res.status(200);
       }
       
-      // Stream the response directly (no buffering for speed)
+      // Stream the response directly
       response.body.pipe(res);
       
     } catch (fetchError) {
@@ -397,6 +426,13 @@ app.get('/api/stats/:videoId', async (req, res) => {
       return res.status(401).json({ 
         success: false, 
         message: 'Invalid credentials' 
+      });
+    }
+    
+    if (!db) {
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized' 
       });
     }
     
@@ -433,7 +469,8 @@ app.get('/api/stats/:videoId', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    firebase: db ? 'connected' : 'not connected'
   });
 });
 
@@ -447,7 +484,7 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(\`Platform B running on port \${PORT}\`);
+  console.log(`Platform B running on port ${PORT}`);
 });
 
 export default app;
