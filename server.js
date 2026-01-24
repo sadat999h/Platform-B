@@ -1,4 +1,4 @@
-//server.js Platform B - FIXED
+//server.js Platform B - FULLY SECURE (No URL Exposure)
 
 import express from 'express';
 import cors from 'cors';
@@ -10,7 +10,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin with error handling
+// Initialize Firebase Admin
 let db;
 try {
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -47,7 +47,7 @@ function convertDropboxUrl(url) {
       const separator = url.includes('?') ? '&' : '?';
       directUrl = url + separator + 'raw=1';
     }
-    return { streamUrl: directUrl, success: true };
+    return { streamUrl: directUrl, useProxy: true, success: true };
   } catch (error) {
     return { success: false, message: error.message };
   }
@@ -66,11 +66,10 @@ function convertGoogleDriveUrl(url) {
     }
     
     if (fileId) {
-      // Use Google Drive's preview endpoint which works better for streaming
       return { 
-        streamUrl: `https://drive.google.com/file/d/${fileId}/preview`,
+        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
         fileId: fileId,
-        useIframe: true,
+        useProxy: true,
         success: true 
       };
     }
@@ -96,9 +95,10 @@ function convertYouTubeUrl(url) {
     
     if (videoId) {
       return { 
-        streamUrl: `https://www.youtube.com/embed/${videoId}?autoplay=0&controls=1&modestbranding=1`,
+        streamUrl: `https://www.youtube.com/embed/${videoId}`,
         videoId: videoId,
-        useIframe: true,
+        useProxy: true,
+        isEmbed: true,
         success: true 
       };
     }
@@ -114,9 +114,10 @@ function convertVimeoUrl(url) {
     const videoId = urlObj.pathname.split('/').filter(p => p)[0];
     if (videoId) {
       return { 
-        streamUrl: `https://player.vimeo.com/video/${videoId}?title=0&byline=0&portrait=0`,
+        streamUrl: `https://player.vimeo.com/video/${videoId}`,
         videoId: videoId,
-        useIframe: true,
+        useProxy: true,
+        isEmbed: true,
         success: true 
       };
     }
@@ -134,7 +135,8 @@ function convertDailymotionUrl(url) {
       return { 
         streamUrl: `https://www.dailymotion.com/embed/video/${videoId}`,
         videoId: videoId,
-        useIframe: true,
+        useProxy: true,
+        isEmbed: true,
         success: true 
       };
     }
@@ -240,7 +242,8 @@ app.post('/api/submit-video', async (req, res) => {
       originalUrl: videoUrl,
       streamUrl: converted.streamUrl,
       platform: platform.toLowerCase(),
-      useIframe: converted.useIframe || false,
+      useProxy: converted.useProxy || false,
+      isEmbed: converted.isEmbed || false,
       platformVideoId: converted.videoId || converted.fileId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: userId,
@@ -264,7 +267,7 @@ app.post('/api/submit-video', async (req, res) => {
   }
 });
 
-// Fetch video metadata
+// CRITICAL: Fetch video metadata - NEVER expose original URL
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
@@ -300,20 +303,24 @@ app.get('/api/video/:videoId', async (req, res) => {
       lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
     });
     
-    if (videoData.useIframe) {
+    // CRITICAL: NEVER send original URL to client
+    // All content goes through our proxy
+    if (videoData.isEmbed) {
+      // For embeds (YouTube, Vimeo, Dailymotion), proxy the iframe
       res.json({
         success: true,
-        streamUrl: videoData.streamUrl,
+        proxyUrl: `${process.env.PLATFORM_B_URL}/api/embed/${videoId}`,
         platform: videoData.platform,
-        useIframe: true,
+        type: 'embed',
         videoId: videoId
       });
     } else {
+      // For direct videos (Dropbox, GDrive), proxy the stream
       res.json({
         success: true,
         proxyUrl: `${process.env.PLATFORM_B_URL}/api/stream/${videoId}`,
         platform: videoData.platform,
-        useIframe: false,
+        type: 'video',
         videoId: videoId
       });
     }
@@ -326,7 +333,56 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// OPTIMIZED streaming proxy - direct pipe with range support
+// Embed proxy for iframe-based platforms (YouTube, Vimeo, Dailymotion)
+app.get('/api/embed/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const securityString = req.query.key || req.headers['x-security-string'];
+    
+    if (!securityString || securityString !== MASTER_SECURITY_STRING) {
+      return res.status(403).send('Forbidden');
+    }
+    
+    if (!db) {
+      return res.status(500).send('Database not initialized');
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).send('Not Found');
+    }
+    
+    const videoData = videoDoc.data();
+    const embedUrl = videoData.streamUrl;
+    
+    // Fetch the embed page and serve it
+    const response = await fetch(embedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    if (!response.ok) {
+      return res.status(response.status).send('Embed Error');
+    }
+    
+    let html = await response.text();
+    
+    // Set proper headers
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    res.send(html);
+    
+  } catch (error) {
+    console.error('Embed proxy error:', error);
+    res.status(500).send('Server Error');
+  }
+});
+
+// Video streaming proxy - Direct stream with range support
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
@@ -371,13 +427,13 @@ app.get('/api/stream/:videoId', async (req, res) => {
         return res.status(response.status).send('Source Error');
       }
       
-      // CRITICAL: Set CORS headers to allow video tag access
+      // Set CORS headers
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', '*');
       res.setHeader('Access-Control-Expose-Headers', '*');
       
-      // Copy ALL headers from source
+      // Copy headers from source
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
@@ -390,19 +446,17 @@ app.get('/api/stream/:videoId', async (req, res) => {
       if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
       
-      // Enable aggressive caching for speed
+      // Enable caching for speed
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       
-      // Set appropriate status
+      // Set status
       if (range && response.status === 206) {
         res.status(206);
-      } else if (range && response.status === 200 && contentLength) {
-        res.status(200);
       } else {
         res.status(response.status);
       }
       
-      // CRITICAL: Stream directly - NO buffering!
+      // Stream directly
       response.body.pipe(res);
       
     } catch (fetchError) {
@@ -418,6 +472,14 @@ app.get('/api/stream/:videoId', async (req, res) => {
 
 // Handle CORS preflight
 app.options('/api/stream/:videoId', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).send();
+});
+
+app.options('/api/embed/:videoId', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
