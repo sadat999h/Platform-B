@@ -665,6 +665,59 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Test endpoint - Direct stream without security (REMOVE IN PRODUCTION)
+app.get('/api/test/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    
+    console.log('TEST STREAM - Video ID:', videoId);
+    
+    if (!db) {
+      return res.status(500).send('Database not initialized');
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).send('Video not found');
+    }
+    
+    const videoData = videoDoc.data();
+    const sourceUrl = videoData.streamUrl;
+    
+    console.log('TEST STREAM - Source:', sourceUrl);
+    
+    const response = await fetch(sourceUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      redirect: 'follow'
+    });
+    
+    console.log('TEST STREAM - Response:', response.status);
+    
+    if (!response.ok) {
+      return res.status(response.status).send('Source Error');
+    }
+    
+    // Set headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', response.headers.get('content-type') || 'video/mp4');
+    res.setHeader('Accept-Ranges', 'bytes');
+    
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    
+    console.log('TEST STREAM - Piping to client');
+    
+    response.body.pipe(res);
+    
+  } catch (error) {
+    console.error('TEST STREAM - Error:', error);
+    res.status(500).send('Error: ' + error.message);
+  }
+});
+
 // Debug endpoint - check if a video stream is accessible
 app.get('/api/debug/stream/:videoId', async (req, res) => {
   try {
