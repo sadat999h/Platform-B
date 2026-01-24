@@ -66,10 +66,13 @@ function convertGoogleDriveUrl(url) {
     }
     
     if (fileId) {
+      // Use multiple streaming URLs for better compatibility
       return { 
-        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+        alternateUrl: `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
         fileId: fileId,
         useProxy: true,
+        isGoogleDrive: true,
         success: true 
       };
     }
@@ -241,9 +244,11 @@ app.post('/api/submit-video', async (req, res) => {
     await db.collection('videos').doc(videoId).set({
       originalUrl: videoUrl,
       streamUrl: converted.streamUrl,
+      alternateUrl: converted.alternateUrl || null,
       platform: platform.toLowerCase(),
       useProxy: converted.useProxy || false,
       isEmbed: converted.isEmbed || false,
+      isGoogleDrive: converted.isGoogleDrive || false,
       platformVideoId: converted.videoId || converted.fileId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       createdBy: userId,
@@ -382,7 +387,7 @@ app.get('/api/embed/:videoId', async (req, res) => {
   }
 });
 
-// Video streaming proxy - ULTRA-FAST with optimized buffering
+// Video streaming proxy - ULTRA-FAST with advanced buffering elimination
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
@@ -403,7 +408,8 @@ app.get('/api/stream/:videoId', async (req, res) => {
     }
     
     const videoData = videoDoc.data();
-    const sourceUrl = videoData.streamUrl;
+    let sourceUrl = videoData.streamUrl;
+    const isGoogleDrive = videoData.isGoogleDrive || false;
     
     // Handle range requests for instant seeking
     const range = req.headers.range;
@@ -419,12 +425,55 @@ app.get('/api/stream/:videoId', async (req, res) => {
       headers['Range'] = range;
     }
     
+    // Google Drive specific optimization
+    if (isGoogleDrive) {
+      headers['Referer'] = 'https://drive.google.com/';
+      headers['Origin'] = 'https://drive.google.com';
+    }
+    
     try {
-      const response = await fetch(sourceUrl, { 
+      let response = await fetch(sourceUrl, { 
         headers,
-        redirect: 'follow',
+        redirect: 'manual',
         compress: false
       });
+      
+      // Handle Google Drive redirects
+      if (isGoogleDrive && (response.status === 301 || response.status === 302 || response.status === 303 || response.status === 307 || response.status === 308)) {
+        const redirectUrl = response.headers.get('location');
+        if (redirectUrl) {
+          console.log('Following Google Drive redirect...');
+          response = await fetch(redirectUrl, {
+            headers,
+            redirect: 'follow',
+            compress: false
+          });
+        }
+      }
+      
+      // Check if response contains Google Drive virus scan warning page
+      if (isGoogleDrive && response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('text/html')) {
+          // This is the virus scan page, need to extract actual download link
+          const html = await response.text();
+          const confirmMatch = html.match(/confirm=([^&"']+)/);
+          
+          if (confirmMatch) {
+            const confirmCode = confirmMatch[1];
+            const newUrl = sourceUrl.includes('?') 
+              ? `${sourceUrl}&confirm=${confirmCode}`
+              : `${sourceUrl}?confirm=${confirmCode}`;
+            
+            console.log('Bypassing Google Drive confirmation...');
+            response = await fetch(newUrl, {
+              headers,
+              redirect: 'follow',
+              compress: false
+            });
+          }
+        }
+      }
       
       if (!response.ok) {
         console.error('Source error:', response.status, response.statusText);
@@ -441,38 +490,42 @@ app.get('/api/stream/:videoId', async (req, res) => {
       const contentType = response.headers.get('content-type');
       const contentLength = response.headers.get('content-length');
       const contentRange = response.headers.get('content-range');
-      const acceptRanges = response.headers.get('accept-ranges');
       const lastModified = response.headers.get('last-modified');
       const etag = response.headers.get('etag');
       
       if (contentType) res.setHeader('Content-Type', contentType);
-      if (acceptRanges) res.setHeader('Accept-Ranges', acceptRanges);
-      else res.setHeader('Accept-Ranges', 'bytes');
+      
+      // Force Accept-Ranges for better seeking
+      res.setHeader('Accept-Ranges', 'bytes');
       
       if (contentLength) res.setHeader('Content-Length', contentLength);
       if (contentRange) res.setHeader('Content-Range', contentRange);
       if (lastModified) res.setHeader('Last-Modified', lastModified);
       if (etag) res.setHeader('ETag', etag);
       
-      // Optimize for streaming - allow caching but enable range requests
-      res.setHeader('Cache-Control', 'public, max-age=3600');
-      
-      // Disable buffering for immediate streaming
+      // Optimize for streaming
+      res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('X-Content-Type-Options', 'nosniff');
       
       // Set appropriate status
       if (range && response.status === 206) {
         res.status(206);
       } else if (range && contentLength) {
-        // If source doesn't support ranges, still try to serve
         res.status(200);
       } else {
         res.status(response.status);
       }
       
-      // CRITICAL: Direct pipe with no buffering
-      res.flushHeaders(); // Send headers immediately
+      // CRITICAL: Send headers immediately
+      res.flushHeaders();
       
+      // TCP optimization
+      if (res.socket) {
+        res.socket.setNoDelay(true);
+        res.socket.setTimeout(0);
+      }
+      
+      // ADVANCED: Stream with zero buffering using direct pipe
       response.body.on('error', (err) => {
         console.error('Stream pipe error:', err);
         if (!res.headersSent) {
@@ -480,7 +533,8 @@ app.get('/api/stream/:videoId', async (req, res) => {
         }
       });
       
-      response.body.pipe(res);
+      // Direct streaming with backpressure handling
+      response.body.pipe(res, { end: true });
       
     } catch (fetchError) {
       console.error('Fetch error:', fetchError);
