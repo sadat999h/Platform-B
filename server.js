@@ -1,0 +1,786 @@
+//server.js Platform B - FULLY SECURE (No URL Exposure)
+
+import express from 'express';
+import cors from 'cors';
+import crypto from 'crypto';
+import admin from 'firebase-admin';
+import fetch from 'node-fetch';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// Initialize Firebase Admin
+let db;
+try {
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    console.error('FIREBASE_SERVICE_ACCOUNT not set');
+  } else {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    }
+    
+    db = admin.firestore();
+    console.log('Firebase initialized successfully');
+  }
+} catch (error) {
+  console.error('Firebase initialization error:', error.message);
+}
+
+const MASTER_SECURITY_STRING = process.env.MASTER_SECURITY_STRING;
+
+// Platform-specific URL converters
+function convertDropboxUrl(url) {
+  try {
+    let directUrl = url;
+    if (url.includes('raw=1')) {
+      directUrl = url;
+    } else if (url.includes('dl=0')) {
+      directUrl = url.replace('dl=0', 'raw=1');
+    } else if (url.includes('dl=1')) {
+      directUrl = url.replace('dl=1', 'raw=1');
+    } else {
+      const separator = url.includes('?') ? '&' : '?';
+      directUrl = url + separator + 'raw=1';
+    }
+    return { streamUrl: directUrl, useProxy: true, success: true };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertGoogleDriveUrl(url) {
+  try {
+    let fileId = '';
+    const matchFile = url.match(/\/file\/d\/([^/?]+)/);
+    const matchOpen = url.match(/[?&]id=([^&]+)/);
+    
+    if (matchFile) {
+      fileId = matchFile[1];
+    } else if (matchOpen) {
+      fileId = matchOpen[1];
+    }
+    
+    if (fileId) {
+      // Use multiple streaming URLs for better compatibility
+      return { 
+        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+        alternateUrl: `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+        fileId: fileId,
+        useProxy: true,
+        isGoogleDrive: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Google Drive URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertYouTubeUrl(url) {
+  try {
+    let videoId = '';
+    const urlObj = new URL(url);
+    
+    if (urlObj.hostname.includes('youtu.be')) {
+      videoId = urlObj.pathname.slice(1);
+    } else if (urlObj.searchParams.has('v')) {
+      videoId = urlObj.searchParams.get('v');
+    } else {
+      const match = urlObj.pathname.match(/\/embed\/([^/?]+)/);
+      if (match) videoId = match[1];
+    }
+    
+    if (videoId) {
+      return { 
+        streamUrl: `https://www.youtube.com/embed/${videoId}`,
+        videoId: videoId,
+        useProxy: true,
+        isEmbed: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid YouTube URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertVimeoUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(p => p)[0];
+    if (videoId) {
+      return { 
+        streamUrl: `https://player.vimeo.com/video/${videoId}`,
+        videoId: videoId,
+        useProxy: true,
+        isEmbed: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Vimeo URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+function convertDailymotionUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(p => p && p !== 'video')[0];
+    if (videoId) {
+      return { 
+        streamUrl: `https://www.dailymotion.com/embed/video/${videoId}`,
+        videoId: videoId,
+        useProxy: true,
+        isEmbed: true,
+        success: true 
+      };
+    }
+    return { success: false, message: 'Invalid Dailymotion URL' };
+  } catch (error) {
+    return { success: false, message: error.message };
+  }
+}
+
+// Login endpoint
+app.post('/api/login', async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+    
+    if (!userId || !password) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User ID and password are required' 
+      });
+    }
+    
+    if (userId === process.env.ADMIN_USER_ID && password === process.env.ADMIN_PASSWORD) {
+      res.json({
+        success: true,
+        message: 'Login successful'
+      });
+    } else {
+      res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// Submit video URL endpoint
+app.post('/api/submit-video', async (req, res) => {
+  try {
+    const { userId, password, videoUrl, platform } = req.body;
+    
+    if (userId !== process.env.ADMIN_USER_ID || password !== process.env.ADMIN_PASSWORD) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+    
+    if (!videoUrl || !platform) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Video URL and platform are required' 
+      });
+    }
+    
+    if (!db) {
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized. Check server configuration.' 
+      });
+    }
+    
+    let converted;
+    switch(platform.toLowerCase()) {
+      case 'dropbox':
+        converted = convertDropboxUrl(videoUrl);
+        break;
+      case 'gdrive':
+      case 'google-drive':
+        converted = convertGoogleDriveUrl(videoUrl);
+        break;
+      case 'youtube':
+        converted = convertYouTubeUrl(videoUrl);
+        break;
+      case 'vimeo':
+        converted = convertVimeoUrl(videoUrl);
+        break;
+      case 'dailymotion':
+        converted = convertDailymotionUrl(videoUrl);
+        break;
+      default:
+        return res.status(400).json({ 
+          success: false, 
+          message: 'Unsupported platform' 
+        });
+    }
+    
+    if (!converted.success) {
+      return res.status(400).json({ 
+        success: false, 
+        message: converted.message 
+      });
+    }
+    
+    const videoId = crypto.randomBytes(16).toString('hex');
+    
+    await db.collection('videos').doc(videoId).set({
+      originalUrl: videoUrl,
+      streamUrl: converted.streamUrl,
+      alternateUrl: converted.alternateUrl || null,
+      platform: platform.toLowerCase(),
+      useProxy: converted.useProxy || false,
+      isEmbed: converted.isEmbed || false,
+      isGoogleDrive: converted.isGoogleDrive || false,
+      platformVideoId: converted.videoId || converted.fileId || null,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      createdBy: userId,
+      accessCount: 0
+    });
+    
+    const platformBUrl = `${process.env.PLATFORM_B_URL}/video/${videoId}`;
+    
+    res.json({
+      success: true,
+      videoUrl: platformBUrl,
+      videoId,
+      platform: platform.toLowerCase()
+    });
+  } catch (error) {
+    console.error('Submit video error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// CRITICAL: Fetch video metadata - NEVER expose original URL
+app.get('/api/video/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const securityString = req.headers['x-security-string'];
+    
+    console.log('Video metadata request for:', videoId);
+    console.log('Security header present:', !!securityString);
+    console.log('Master string set:', !!MASTER_SECURITY_STRING);
+    
+    // CRITICAL FIX: Proper string comparison
+    const receivedKey = securityString ? String(securityString).trim() : '';
+    const masterKey = MASTER_SECURITY_STRING ? String(MASTER_SECURITY_STRING).trim() : '';
+    
+    console.log('Received key length:', receivedKey.length);
+    console.log('Master key length:', masterKey.length);
+    console.log('Keys match:', receivedKey === masterKey);
+    
+    if (!receivedKey || !masterKey || receivedKey !== masterKey) {
+      console.error('Security validation failed');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Invalid security string' 
+      });
+    }
+    
+    console.log('✓ Security validated for metadata');
+    
+    if (!db) {
+      console.error('Database not initialized');
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized' 
+      });
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      console.error('Video not found in database:', videoId);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+    
+    const videoData = videoDoc.data();
+    console.log('Video found - Platform:', videoData.platform);
+    
+    await db.collection('videos').doc(videoId).update({
+      accessCount: admin.firestore.FieldValue.increment(1),
+      lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    
+    // CRITICAL: NEVER send original URL to client
+    // All content goes through our proxy
+    if (videoData.isEmbed) {
+      console.log('Returning embed proxy URL');
+      res.json({
+        success: true,
+        proxyUrl: `${process.env.PLATFORM_B_URL}/api/embed/${videoId}`,
+        platform: videoData.platform,
+        type: 'embed',
+        videoId: videoId
+      });
+    } else {
+      console.log('Returning stream proxy URL');
+      res.json({
+        success: true,
+        proxyUrl: `${process.env.PLATFORM_B_URL}/api/stream/${videoId}`,
+        platform: videoData.platform,
+        type: 'video',
+        videoId: videoId
+      });
+    }
+  } catch (error) {
+    console.error('Fetch video error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// Embed proxy for iframe-based platforms (YouTube, Vimeo, Dailymotion)
+app.get('/api/embed/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const securityString = req.query.key || req.headers['x-security-string'];
+    
+    if (!securityString || securityString !== MASTER_SECURITY_STRING) {
+      return res.status(403).send('Forbidden');
+    }
+    
+    if (!db) {
+      return res.status(500).send('Database not initialized');
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).send('Not Found');
+    }
+    
+    const videoData = videoDoc.data();
+    const embedUrl = videoData.streamUrl;
+    
+    // Fetch the embed page and serve it
+    const response = await fetch(embedUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    
+    if (!response.ok) {
+      return res.status(response.status).send('Embed Error');
+    }
+    
+    let html = await response.text();
+    
+    // Set proper headers
+    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    res.send(html);
+    
+  } catch (error) {
+    console.error('Embed proxy error:', error);
+    res.status(500).send('Server Error');
+  }
+});
+
+// Video streaming proxy - ULTRA-FAST with advanced buffering elimination
+app.get('/api/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const queryKey = req.query.key;
+    const headerKey = req.headers['x-security-string'];
+    
+    console.log('=== STREAM REQUEST ===');
+    console.log('Video ID:', videoId);
+    console.log('Query key present:', !!queryKey);
+    console.log('Header key present:', !!headerKey);
+    
+    // CRITICAL FIX: Proper string handling
+    const receivedKey = queryKey ? String(queryKey).trim() : (headerKey ? String(headerKey).trim() : '');
+    const masterKey = MASTER_SECURITY_STRING ? String(MASTER_SECURITY_STRING).trim() : '';
+    
+    console.log('Received key length:', receivedKey.length);
+    console.log('Master key length:', masterKey.length);
+    console.log('Keys match:', receivedKey === masterKey);
+    
+    if (!receivedKey || !masterKey) {
+      console.error('Missing security string');
+      return res.status(403).send('Forbidden: No security string');
+    }
+    
+    if (receivedKey !== masterKey) {
+      console.error('Security mismatch');
+      // Log first/last 10 chars for debugging
+      console.error('Received starts:', receivedKey.substring(0, 10));
+      console.error('Master starts:', masterKey.substring(0, 10));
+      return res.status(403).send('Forbidden: Invalid security string');
+    }
+    
+    console.log('✓ Security validated');
+    
+    if (!db) {
+      console.error('Database not initialized');
+      return res.status(500).send('Database not initialized');
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      console.error('Video not found:', videoId);
+      return res.status(404).send('Not Found');
+    }
+    
+    const videoData = videoDoc.data();
+    let sourceUrl = videoData.streamUrl;
+    const isGoogleDrive = videoData.isGoogleDrive || false;
+    const platform = videoData.platform || 'unknown';
+    
+    console.log('Platform:', platform);
+    console.log('Fetching from source...');
+    
+    const range = req.headers.range;
+    
+    const headers = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Encoding': 'identity',
+      'Connection': 'keep-alive'
+    };
+    
+    if (range) {
+      headers['Range'] = range;
+    }
+    
+    if (isGoogleDrive) {
+      headers['Referer'] = 'https://drive.google.com/';
+      headers['Origin'] = 'https://drive.google.com';
+    }
+    
+    try {
+      let response = await fetch(sourceUrl, { 
+        headers,
+        redirect: 'follow', // CHANGED: Follow redirects automatically
+        compress: false
+      });
+      
+      console.log('Fetch status:', response.status);
+      
+      // Handle additional redirects for Google Drive
+      if (isGoogleDrive && (response.status === 301 || response.status === 302 || response.status === 303 || response.status === 307 || response.status === 308)) {
+        const redirectUrl = response.headers.get('location');
+        if (redirectUrl) {
+          console.log('Following redirect');
+          response = await fetch(redirectUrl, {
+            headers,
+            redirect: 'follow',
+            compress: false
+          });
+        }
+      }
+      
+      // Check for Google Drive confirmation page
+      if (isGoogleDrive && response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('text/html')) {
+          const html = await response.text();
+          const confirmMatch = html.match(/confirm=([^&"']+)/);
+          
+          if (confirmMatch) {
+            const confirmCode = confirmMatch[1];
+            const newUrl = sourceUrl.includes('?') 
+              ? `${sourceUrl}&confirm=${confirmCode}`
+              : `${sourceUrl}?confirm=${confirmCode}`;
+            
+            console.log('Bypassing confirmation');
+            response = await fetch(newUrl, {
+              headers,
+              redirect: 'follow',
+              compress: false
+            });
+          }
+        }
+      }
+      
+      if (!response.ok) {
+        console.error('Source error:', response.status);
+        return res.status(response.status).send('Source Error');
+      }
+      
+      // Set CORS headers
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Accept-Encoding');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+      
+      // Get content type
+      let contentType = response.headers.get('content-type');
+      
+      if (!contentType || contentType.includes('application/octet-stream') || contentType.includes('binary')) {
+        const urlLower = sourceUrl.toLowerCase();
+        if (urlLower.includes('.mp4')) contentType = 'video/mp4';
+        else if (urlLower.includes('.webm')) contentType = 'video/webm';
+        else if (urlLower.includes('.ogg')) contentType = 'video/ogg';
+        else if (urlLower.includes('.mov')) contentType = 'video/quicktime';
+        else if (urlLower.includes('.avi')) contentType = 'video/x-msvideo';
+        else if (urlLower.includes('.mkv')) contentType = 'video/x-matroska';
+        else contentType = 'video/mp4';
+      }
+      
+      console.log('Content-Type:', contentType);
+      
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Accept-Ranges', 'bytes');
+      
+      const contentLength = response.headers.get('content-length');
+      const contentRange = response.headers.get('content-range');
+      const lastModified = response.headers.get('last-modified');
+      const etag = response.headers.get('etag');
+      
+      if (contentLength) res.setHeader('Content-Length', contentLength);
+      if (contentRange) res.setHeader('Content-Range', contentRange);
+      if (lastModified) res.setHeader('Last-Modified', lastModified);
+      if (etag) res.setHeader('ETag', etag);
+      
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      
+      if (range && response.status === 206) {
+        res.status(206);
+      } else {
+        res.status(200);
+      }
+      
+      console.log('✓ Streaming to client');
+      
+      res.flushHeaders();
+      
+      if (res.socket) {
+        res.socket.setNoDelay(true);
+        res.socket.setTimeout(0);
+      }
+      
+      response.body.on('error', (err) => {
+        console.error('Pipe error:', err);
+      });
+      
+      response.body.pipe(res, { end: true });
+      
+    } catch (fetchError) {
+      console.error('Fetch error:', fetchError);
+      if (!res.headersSent) {
+        res.status(500).send('Stream Error: ' + fetchError.message);
+      }
+    }
+    
+  } catch (error) {
+    console.error('Stream error:', error);
+    if (!res.headersSent) {
+      res.status(500).send('Server Error: ' + error.message);
+    }
+  }
+});
+
+// Handle CORS preflight
+app.options('/api/stream/:videoId', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).send();
+});
+
+app.options('/api/embed/:videoId', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).send();
+});
+
+// Get video stats
+app.get('/api/stats/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    const { userId, password } = req.query;
+    
+    if (userId !== process.env.ADMIN_USER_ID || password !== process.env.ADMIN_PASSWORD) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Invalid credentials' 
+      });
+    }
+    
+    if (!db) {
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Database not initialized' 
+      });
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Video not found' 
+      });
+    }
+    
+    const videoData = videoDoc.data();
+    
+    res.json({
+      success: true,
+      stats: {
+        videoId,
+        platform: videoData.platform,
+        accessCount: videoData.accessCount || 0,
+        createdAt: videoData.createdAt,
+        lastAccessedAt: videoData.lastAccessedAt || null
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      success: false, 
+      message: 'Server error: ' + error.message 
+    });
+  }
+});
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    firebase: db ? 'connected' : 'not connected',
+    securityStringSet: !!MASTER_SECURITY_STRING,
+    platformBUrl: process.env.PLATFORM_B_URL || 'not set'
+  });
+});
+
+// Test endpoint - Direct stream without security (REMOVE IN PRODUCTION)
+app.get('/api/test/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    
+    console.log('TEST STREAM - Video ID:', videoId);
+    
+    if (!db) {
+      return res.status(500).send('Database not initialized');
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.status(404).send('Video not found');
+    }
+    
+    const videoData = videoDoc.data();
+    const sourceUrl = videoData.streamUrl;
+    
+    console.log('TEST STREAM - Source:', sourceUrl);
+    
+    const response = await fetch(sourceUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      },
+      redirect: 'follow' // CHANGED: Follow redirects
+    });
+    
+    console.log('TEST STREAM - Response:', response.status);
+    
+    if (!response.ok) {
+      return res.status(response.status).send('Source Error: ' + response.statusText);
+    }
+    
+    // Set headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    let contentType = response.headers.get('content-type');
+    if (!contentType || contentType.includes('octet-stream')) {
+      contentType = 'video/mp4';
+    }
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    
+    console.log('TEST STREAM - Piping to client');
+    
+    response.body.pipe(res);
+    
+  } catch (error) {
+    console.error('TEST STREAM - Error:', error);
+    res.status(500).send('Error: ' + error.message);
+  }
+});
+
+// Debug endpoint - check if a video stream is accessible
+app.get('/api/debug/stream/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    
+    if (!db) {
+      return res.json({ error: 'Database not initialized' });
+    }
+    
+    const videoDoc = await db.collection('videos').doc(videoId).get();
+    
+    if (!videoDoc.exists) {
+      return res.json({ error: 'Video not found' });
+    }
+    
+    const videoData = videoDoc.data();
+    
+    res.json({
+      videoId,
+      platform: videoData.platform,
+      hasStreamUrl: !!videoData.streamUrl,
+      streamUrl: videoData.streamUrl ? 'Hidden for security' : 'Not set',
+      isEmbed: videoData.isEmbed || false,
+      isGoogleDrive: videoData.isGoogleDrive || false,
+      created: videoData.createdAt,
+      accessCount: videoData.accessCount || 0
+    });
+  } catch (error) {
+    res.json({ error: error.message });
+  }
+});
+
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: 'Endpoint not found' 
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Platform B running on port ${PORT}`);
+});
+
+export default app;
