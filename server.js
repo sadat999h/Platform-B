@@ -2,45 +2,37 @@
 // HARDCODED CONFIGURATION - Change these values
 
 const CONFIG = {
-  ADMIN_USER_ID: 'Sporsho',
-  ADMIN_PASSWORD: 'Sporsho123',
+  ADMIN_USER_ID: 'admin',
+  ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: 'ULTRA_SECRET_KEY_12345_CHANGE_THIS',
   PLATFORM_B_URL: 'https://your-platform-b.vercel.app'
 };
 
 import express from 'express';
-import cors from 'cors';
-import crypto from 'crypto';
 import admin from 'firebase-admin';
 import fetch from 'node-fetch';
+import crypto from 'crypto';
 
 const app = express();
 
-// Enhanced CORS configuration
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
-  allowedHeaders: ['Content-Type', 'X-Security-String', 'Range', 'Accept', 'Accept-Encoding'],
-  exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges'],
-  credentials: false,
-  maxAge: 86400
-}));
-
-app.use(express.json());
-
-// Additional CORS headers middleware
+// CRITICAL: CORS must be configured FIRST before any other middleware
 app.use((req, res, next) => {
+  // Set CORS headers for ALL requests
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.setHeader('Access-Control-Expose-Headers', '*');
+  res.setHeader('Access-Control-Max-Age', '86400');
   
+  // Handle preflight requests
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
   
   next();
 });
+
+app.use(express.json());
 
 // Initialize Firebase from environment variable
 let db;
@@ -62,15 +54,6 @@ try {
   console.error('❌ Firebase initialization error:', error.message);
   console.error('Make sure FIREBASE_SERVICE_ACCOUNT env variable contains valid JSON');
 }
-
-// CORS preflight handlers - Must be before other routes
-app.options('*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(200).end();
-});
 
 // Platform converters
 function convertDropboxUrl(url) {
@@ -260,11 +243,6 @@ app.post('/api/submit-video', async (req, res) => {
 // Get video metadata - NEVER expose original URL
 app.get('/api/video/:videoId', async (req, res) => {
   try {
-    // Set CORS headers first
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String');
-    
     const { videoId } = req.params;
     const secKey = req.headers['x-security-string'];
     
@@ -320,12 +298,6 @@ app.get('/api/video/:videoId', async (req, res) => {
 // Stream proxy - ULTRA FAST
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
-    // Set CORS headers immediately
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Accept-Encoding, X-Security-String');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
-    
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
     
@@ -415,10 +387,6 @@ app.get('/api/stream/:videoId', async (req, res) => {
 // Embed proxy
 app.get('/api/embed/:videoId', async (req, res) => {
   try {
-    // Set CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-    
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
     
@@ -457,22 +425,20 @@ app.get('/api/embed/:videoId', async (req, res) => {
   }
 });
 
-// CORS preflight handlers - Must be before other routes
-app.options('*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  res.status(200).end();
-});
-
 // Health check
 app.get('/api/health', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
   res.json({ 
     status: 'ok',
     firebase: db ? 'connected' : 'not connected',
     securityConfigured: !!CONFIG.MASTER_SECURITY_STRING
+  });
+});
+
+// Handle 404
+app.use((req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    message: 'Endpoint not found' 
   });
 });
 
