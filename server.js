@@ -5,16 +5,7 @@ const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: 'ULTRA_SECRET_KEY_12345_CHANGE_THIS',
-  PLATFORM_B_URL: 'https://your-platform-b.vercel.app',
-  FIREBASE_SERVICE_ACCOUNT: {
-    // Replace with your Firebase service account JSON
-    "type": "service_account",
-    "project_id": "your-project-id",
-    "private_key_id": "your-key-id",
-    "private_key": "-----BEGIN PRIVATE KEY-----\nYour key here\n-----END PRIVATE KEY-----\n",
-    "client_email": "your-email@project.iam.gserviceaccount.com",
-    "client_id": "your-client-id"
-  }
+  PLATFORM_B_URL: 'https://your-platform-b.vercel.app'
 };
 
 import express from 'express';
@@ -27,18 +18,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase
+// Initialize Firebase from environment variable
 let db;
 try {
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable not set');
+  }
+  
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  
   if (!admin.apps.length) {
     admin.initializeApp({
-      credential: admin.credential.cert(CONFIG.FIREBASE_SERVICE_ACCOUNT)
+      credential: admin.credential.cert(serviceAccount)
     });
   }
   db = admin.firestore();
-  console.log('✓ Firebase initialized');
+  console.log('✓ Firebase initialized successfully');
 } catch (error) {
-  console.error('Firebase error:', error.message);
+  console.error('❌ Firebase initialization error:', error.message);
+  console.error('Make sure FIREBASE_SERVICE_ACCOUNT env variable contains valid JSON');
 }
 
 // Platform converters
