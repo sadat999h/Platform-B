@@ -2,8 +2,8 @@
 // HARDCODED CONFIGURATION - Change these values
 
 const CONFIG = {
-  ADMIN_USER_ID: 'admin',
-  ADMIN_PASSWORD: 'admin123',
+  ADMIN_USER_ID: 'Sporsho',
+  ADMIN_PASSWORD: 'Sporsho123',
   MASTER_SECURITY_STRING: 'ULTRA_SECRET_KEY_12345_CHANGE_THIS',
   PLATFORM_B_URL: 'https://your-platform-b.vercel.app'
 };
@@ -15,8 +15,32 @@ import admin from 'firebase-admin';
 import fetch from 'node-fetch';
 
 const app = express();
-app.use(cors());
+
+// Enhanced CORS configuration
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS', 'HEAD'],
+  allowedHeaders: ['Content-Type', 'X-Security-String', 'Range', 'Accept', 'Accept-Encoding'],
+  exposedHeaders: ['Content-Length', 'Content-Range', 'Accept-Ranges'],
+  credentials: false,
+  maxAge: 86400
+}));
+
 app.use(express.json());
+
+// Additional CORS headers middleware
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 // Initialize Firebase from environment variable
 let db;
@@ -38,6 +62,15 @@ try {
   console.error('❌ Firebase initialization error:', error.message);
   console.error('Make sure FIREBASE_SERVICE_ACCOUNT env variable contains valid JSON');
 }
+
+// CORS preflight handlers - Must be before other routes
+app.options('*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).end();
+});
 
 // Platform converters
 function convertDropboxUrl(url) {
@@ -227,12 +260,22 @@ app.post('/api/submit-video', async (req, res) => {
 // Get video metadata - NEVER expose original URL
 app.get('/api/video/:videoId', async (req, res) => {
   try {
+    // Set CORS headers first
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String');
+    
     const { videoId } = req.params;
     const secKey = req.headers['x-security-string'];
+    
+    console.log('Video metadata request for:', videoId);
+    console.log('Security header present:', !!secKey);
     
     if (secKey !== CONFIG.MASTER_SECURITY_STRING) {
       return res.status(403).json({ success: false, message: 'Invalid security string' });
     }
+    
+    console.log('✓ Security validated');
     
     if (!db) {
       return res.status(500).json({ success: false, message: 'Database not initialized' });
@@ -245,6 +288,7 @@ app.get('/api/video/:videoId', async (req, res) => {
     }
     
     const videoData = videoDoc.data();
+    console.log('Video found - Platform:', videoData.platform);
     
     await db.collection('videos').doc(videoId).update({
       accessCount: admin.firestore.FieldValue.increment(1),
@@ -268,6 +312,7 @@ app.get('/api/video/:videoId', async (req, res) => {
       });
     }
   } catch (error) {
+    console.error('Fetch video error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -275,12 +320,23 @@ app.get('/api/video/:videoId', async (req, res) => {
 // Stream proxy - ULTRA FAST
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
+    // Set CORS headers immediately
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Type, Accept-Encoding, X-Security-String');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+    
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
+    
+    console.log('=== STREAM REQUEST ===');
+    console.log('Video ID:', videoId);
     
     if (key !== CONFIG.MASTER_SECURITY_STRING) {
       return res.status(403).send('Forbidden');
     }
+    
+    console.log('✓ Security validated');
     
     if (!db) {
       return res.status(500).send('Database error');
@@ -296,6 +352,9 @@ app.get('/api/stream/:videoId', async (req, res) => {
     const sourceUrl = videoData.streamUrl;
     const range = req.headers.range;
     
+    console.log('Platform:', videoData.platform);
+    console.log('Fetching from source...');
+    
     const headers = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept': '*/*',
@@ -309,14 +368,11 @@ app.get('/api/stream/:videoId', async (req, res) => {
     
     const response = await fetch(sourceUrl, { headers, redirect: 'follow' });
     
+    console.log('Fetch status:', response.status);
+    
     if (!response.ok) {
       return res.status(response.status).send('Source error');
     }
-    
-    // Set CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
     
     // Set content type
     let contentType = response.headers.get('content-type') || 'video/mp4';
@@ -336,6 +392,8 @@ app.get('/api/stream/:videoId', async (req, res) => {
     } else {
       res.status(200);
     }
+    
+    console.log('✓ Streaming to client');
     
     res.flushHeaders();
     
@@ -357,6 +415,10 @@ app.get('/api/stream/:videoId', async (req, res) => {
 // Embed proxy
 app.get('/api/embed/:videoId', async (req, res) => {
   try {
+    // Set CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
     
@@ -388,7 +450,6 @@ app.get('/api/embed/:videoId', async (req, res) => {
     const html = await response.text();
     
     res.setHeader('Content-Type', 'text/html');
-    res.setHeader('Access-Control-Allow-Origin', '*');
     res.send(html);
     
   } catch (error) {
@@ -396,16 +457,18 @@ app.get('/api/embed/:videoId', async (req, res) => {
   }
 });
 
-// CORS preflight
-app.options('/api/stream/:videoId', (req, res) => {
+// CORS preflight handlers - Must be before other routes
+app.options('*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.status(200).send();
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Range, Accept, Accept-Encoding');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).end();
 });
 
 // Health check
 app.get('/api/health', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.json({ 
     status: 'ok',
     firebase: db ? 'connected' : 'not connected',
