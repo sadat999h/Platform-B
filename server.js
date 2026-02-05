@@ -1,15 +1,17 @@
-// server.js - Platform B Backend
+// server.js - Platform B Backend with Supabase
 // HARDCODED CONFIGURATION - Change these values
 
 const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: 'ULTRA_SECRET_KEY_12345_CHANGE_THIS',
-  PLATFORM_B_URL: 'https://your-platform-b.vercel.app'
+  PLATFORM_B_URL: 'https://your-platform-b.vercel.app',
+  SUPABASE_URL: 'https://your-project-id.supabase.co',
+  SUPABASE_SERVICE_KEY: 'your-supabase-service-role-key'
 };
 
 import express from 'express';
-import admin from 'firebase-admin';
+import { createClient } from '@supabase/supabase-js';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
 
@@ -34,25 +36,27 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Initialize Firebase from environment variable
-let db;
+// Initialize Supabase - use environment variables if available, otherwise use CONFIG
+let supabase;
 try {
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable not set');
+  const supabaseUrl = process.env.SUPABASE_URL || CONFIG.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY || CONFIG.SUPABASE_SERVICE_KEY;
+  
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error('SUPABASE_URL and SUPABASE_SERVICE_KEY must be set');
   }
   
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
   
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  }
-  db = admin.firestore();
-  console.log('✓ Firebase initialized successfully');
+  console.log('✓ Supabase initialized successfully');
 } catch (error) {
-  console.error('❌ Firebase initialization error:', error.message);
-  console.error('Make sure FIREBASE_SERVICE_ACCOUNT env variable contains valid JSON');
+  console.error('❌ Supabase initialization error:', error.message);
+  console.error('Make sure SUPABASE_URL and SUPABASE_SERVICE_KEY are configured');
 }
 
 // Platform converters
@@ -195,7 +199,7 @@ app.post('/api/submit-video', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Video URL and platform required' });
     }
     
-    if (!db) {
+    if (!supabase) {
       return res.status(500).json({ success: false, message: 'Database not initialized' });
     }
     
@@ -215,17 +219,25 @@ app.post('/api/submit-video', async (req, res) => {
     
     const videoId = crypto.randomBytes(16).toString('hex');
     
-    await db.collection('videos').doc(videoId).set({
-      originalUrl: videoUrl,
-      streamUrl: converted.streamUrl,
-      platform: platform.toLowerCase(),
-      useProxy: converted.useProxy || false,
-      isEmbed: converted.isEmbed || false,
-      isGoogleDrive: converted.isGoogleDrive || false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdBy: userId,
-      accessCount: 0
-    });
+    // Insert into Supabase
+    const { error } = await supabase
+      .from('videos')
+      .insert({
+        id: videoId,
+        original_url: videoUrl,
+        stream_url: converted.streamUrl,
+        platform: platform.toLowerCase(),
+        use_proxy: converted.useProxy || false,
+        is_embed: converted.isEmbed || false,
+        is_google_drive: converted.isGoogleDrive || false,
+        created_by: userId,
+        access_count: 0
+      });
+    
+    if (error) {
+      console.error('Supabase insert error:', error);
+      return res.status(500).json({ success: false, message: error.message });
+    }
     
     const platformBUrl = `${CONFIG.PLATFORM_B_URL}/video/${videoId}`;
     
@@ -255,26 +267,35 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     console.log('✓ Security validated');
     
-    if (!db) {
+    if (!supabase) {
       return res.status(500).json({ success: false, message: 'Database not initialized' });
     }
     
-    const videoDoc = await db.collection('videos').doc(videoId).get();
+    // Fetch video from Supabase
+    const { data: videoData, error } = await supabase
+      .from('videos')
+      .select('*')
+      .eq('id', videoId)
+      .single();
     
-    if (!videoDoc.exists) {
+    if (error || !videoData) {
+      console.error('Video not found:', error);
       return res.status(404).json({ success: false, message: 'Video not found' });
     }
     
-    const videoData = videoDoc.data();
     console.log('Video found - Platform:', videoData.platform);
     
-    await db.collection('videos').doc(videoId).update({
-      accessCount: admin.firestore.FieldValue.increment(1),
-      lastAccessedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+    // Update access count
+    await supabase
+      .from('videos')
+      .update({
+        access_count: videoData.access_count + 1,
+        last_accessed_at: new Date().toISOString()
+      })
+      .eq('id', videoId);
     
     // Return only proxy URL, NEVER original
-    if (videoData.isEmbed) {
+    if (videoData.is_embed) {
       res.json({
         success: true,
         proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}`,
@@ -310,18 +331,22 @@ app.get('/api/stream/:videoId', async (req, res) => {
     
     console.log('✓ Security validated');
     
-    if (!db) {
+    if (!supabase) {
       return res.status(500).send('Database error');
     }
     
-    const videoDoc = await db.collection('videos').doc(videoId).get();
+    // Fetch video from Supabase
+    const { data: videoData, error } = await supabase
+      .from('videos')
+      .select('*')
+      .eq('id', videoId)
+      .single();
     
-    if (!videoDoc.exists) {
+    if (error || !videoData) {
       return res.status(404).send('Not found');
     }
     
-    const videoData = videoDoc.data();
-    const sourceUrl = videoData.streamUrl;
+    const sourceUrl = videoData.stream_url;
     const range = req.headers.range;
     
     console.log('Platform:', videoData.platform);
@@ -334,7 +359,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
     };
     
     if (range) headers['Range'] = range;
-    if (videoData.isGoogleDrive) {
+    if (videoData.is_google_drive) {
       headers['Referer'] = 'https://drive.google.com/';
     }
     
@@ -394,18 +419,22 @@ app.get('/api/embed/:videoId', async (req, res) => {
       return res.status(403).send('Forbidden');
     }
     
-    if (!db) {
+    if (!supabase) {
       return res.status(500).send('Database error');
     }
     
-    const videoDoc = await db.collection('videos').doc(videoId).get();
+    // Fetch video from Supabase
+    const { data: videoData, error } = await supabase
+      .from('videos')
+      .select('*')
+      .eq('id', videoId)
+      .single();
     
-    if (!videoDoc.exists) {
+    if (error || !videoData) {
       return res.status(404).send('Not found');
     }
     
-    const videoData = videoDoc.data();
-    const embedUrl = videoData.streamUrl;
+    const embedUrl = videoData.stream_url;
     
     const response = await fetch(embedUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0' }
@@ -429,7 +458,7 @@ app.get('/api/embed/:videoId', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok',
-    firebase: db ? 'connected' : 'not connected',
+    database: supabase ? 'connected' : 'not connected',
     securityConfigured: !!CONFIG.MASTER_SECURITY_STRING
   });
 });
