@@ -19,16 +19,15 @@ const app = express();
 
 // CRITICAL: CORS must be configured FIRST before any other middleware
 app.use((req, res, next) => {
-  // Set CORS headers for ALL requests
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  res.setHeader('Access-Control-Expose-Headers', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Authorization, Accept');  // ✅ Explicit
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Length, Content-Range');  // ✅ Explicit
   res.setHeader('Access-Control-Max-Age', '86400');
   
-  // Handle preflight requests
   if (req.method === 'OPTIONS') {
-    return res.status(200).end();
+    res.status(200).end();
+    return;  // ✅ Explicit return to stop processing
   }
   
   next();
