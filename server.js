@@ -4,9 +4,17 @@
 const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
-  MASTER_SECURITY_STRING: '06942188162472527188672293629719',
-  PLATFORM_B_URL: 'https://platform-b.vercel.app',
-  PLATFORM_C_URL: 'https://platform-c.vercel.app', // Add your Platform C URL
+  MASTER_SECURITY_STRING: '84418779257393762955868022673598',
+  
+  // ⚠️ CRITICAL: UPDATE THIS WITH YOUR ACTUAL PLATFORM B URL
+  // Find your URL in Vercel dashboard under "Domains"
+  // Examples:
+  //   - 'https://platform-b-two.vercel.app'
+  //   - 'https://platform-b-abc123.vercel.app'
+  //   - 'https://your-custom-domain.com'
+  PLATFORM_B_URL: 'https://platform-b-two.vercel.app/',  // ⚠️ CHANGE THIS!
+  
+  PLATFORM_C_URL: 'https://platform-c.vercel.app',
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4'
 };
@@ -257,7 +265,7 @@ app.post('/api/submit-video', async (req, res) => {
         created_by: userId,
         access_count: 0
       });
-
+    
     if (error) {
       console.error('Supabase insert error:', error);
       return res.status(500).json({ success: false, message: error.message });
@@ -298,7 +306,7 @@ app.get('/api/video/:videoId', async (req, res) => {
         hint: 'Add X-Security-String header'
       });
     }
-
+    
     if (secKey.trim() !== CONFIG.MASTER_SECURITY_STRING.trim()) {
       console.error('❌ Security mismatch');
       console.error('Received:', secKey);
@@ -536,18 +544,19 @@ app.get('/api/health', (req, res) => {
     database: supabase ? 'connected' : 'not connected',
     securityConfigured: !!CONFIG.MASTER_SECURITY_STRING,
     cors: 'enabled',
+    platformBUrl: CONFIG.PLATFORM_B_URL,
     securityString: CONFIG.MASTER_SECURITY_STRING.substring(0, 10) + '...'
   });
 });
 
-// Debug endpoint - shows configuration (remove in production!)
+// Debug endpoint - shows configuration (⚠️ REMOVE IN PRODUCTION!)
 app.get('/api/debug', (req, res) => {
   res.json({
     securityString: CONFIG.MASTER_SECURITY_STRING,
     platformBUrl: CONFIG.PLATFORM_B_URL,
     platformCUrl: CONFIG.PLATFORM_C_URL,
     supabaseConfigured: !!CONFIG.SUPABASE_URL && !!CONFIG.SUPABASE_SERVICE_KEY,
-    message: 'Remove this endpoint in production!'
+    message: '⚠️ REMOVE THIS ENDPOINT IN PRODUCTION!'
   });
 });
 
@@ -561,9 +570,16 @@ app.use((req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
+  console.log(`========================================`);
   console.log(`Platform B running on port ${PORT}`);
-  console.log(`CORS enabled for Platform C: ${CONFIG.PLATFORM_C_URL}`);
-  console.log(`Security string configured: ${CONFIG.MASTER_SECURITY_STRING.substring(0, 10)}...`);
+  console.log(`========================================`);
+  console.log(`CORS enabled for: ${CONFIG.PLATFORM_C_URL}`);
+  console.log(`Platform B URL: ${CONFIG.PLATFORM_B_URL}`);
+  console.log(`Security: ${CONFIG.MASTER_SECURITY_STRING.substring(0, 10)}...`);
+  console.log(`========================================`);
+  console.log(`⚠️  IMPORTANT: Update PLATFORM_B_URL in CONFIG`);
+  console.log(`⚠️  Current: ${CONFIG.PLATFORM_B_URL}`);
+  console.log(`========================================`);
 });
 
 export default app;
