@@ -5,7 +5,8 @@ const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: '84418779257393762955868022673598',
-  PLATFORM_C_URL: 'https://platform-c.vercel.app/',
+  PLATFORM_B_URL: 'https://platform-b-two.vercel.app',
+  PLATFORM_C_URL: 'https://platform-c.vercel.app', // Add your Platform C URL
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4'
 };
@@ -17,7 +18,9 @@ import crypto from 'crypto';
 
 const app = express();
 
-// CRITICAL: CORS must be configured FIRST before any other middleware
+// ============================================
+// CRITICAL CORS CONFIGURATION - MUST BE FIRST
+// ============================================
 app.use((req, res, next) => {
   // Allow multiple origins
   const allowedOrigins = [
@@ -279,6 +282,7 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     console.log('Video metadata request for:', videoId);
     console.log('Security header present:', !!secKey);
+    console.log('Origin:', req.headers.origin);
     
     if (secKey !== CONFIG.MASTER_SECURITY_STRING) {
       return res.status(403).json({ success: false, message: 'Invalid security string' });
@@ -335,7 +339,7 @@ app.get('/api/video/:videoId', async (req, res) => {
   }
 });
 
-// Stream proxy - ULTRA FAST
+// Stream proxy - ULTRA FAST with CORS
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
@@ -343,6 +347,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
     
     console.log('=== STREAM REQUEST ===');
     console.log('Video ID:', videoId);
+    console.log('Origin:', req.headers.origin);
     
     if (key !== CONFIG.MASTER_SECURITY_STRING) {
       return res.status(403).send('Forbidden');
@@ -478,7 +483,8 @@ app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok',
     database: supabase ? 'connected' : 'not connected',
-    securityConfigured: !!CONFIG.MASTER_SECURITY_STRING
+    securityConfigured: !!CONFIG.MASTER_SECURITY_STRING,
+    cors: 'enabled'
   });
 });
 
@@ -493,6 +499,7 @@ app.use((req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Platform B running on port ${PORT}`);
+  console.log(`CORS enabled for Platform C: ${CONFIG.PLATFORM_C_URL}`);
 });
 
 export default app;
