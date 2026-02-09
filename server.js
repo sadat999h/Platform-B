@@ -4,7 +4,7 @@
 const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
-  MASTER_SECURITY_STRING: '84418779257393762955868022673598',
+  MASTER_SECURITY_STRING: '06942188162472527188672293629719',
   PLATFORM_B_URL: 'https://platform-b-two.vercel.app/',
   PLATFORM_C_URL: 'https://platform-c.vercel.app/', // Add your Platform C URL
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
