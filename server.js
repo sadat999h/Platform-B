@@ -19,15 +19,35 @@ const app = express();
 
 // CRITICAL: CORS must be configured FIRST before any other middleware
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Authorization, Accept');  // ✅ Explicit
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Length, Content-Range');  // ✅ Explicit
-  res.setHeader('Access-Control-Max-Age', '86400');
+  // Allow multiple origins
+  const allowedOrigins = [
+    CONFIG.PLATFORM_C_URL,
+    'https://platform-c.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000'
+  ];
   
+  const origin = req.headers.origin;
+  
+  if (allowedOrigins.includes(origin) || !origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, Authorization, Accept, Origin, X-Requested-With, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Length, Content-Range, Accept-Ranges, X-Content-Duration');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.setHeader('Vary', 'Origin');
+  
+  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
-    res.status(200).end();
-    return;  // ✅ Explicit return to stop processing
+    res.status(204).end();
+    return;
   }
   
   next();
