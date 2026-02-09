@@ -25,8 +25,8 @@ app.use((req, res, next) => {
   // Allow multiple origins
   const allowedOrigins = [
     CONFIG.PLATFORM_C_URL,
-    'https://platform-c.vercel.app',
-    'https://platform-c-vercel.app',
+    'https://platform-c.vercel.app/',
+    'https://platform-c-vercel.app/',
     'http://localhost:3000',
     'http://localhost:5173',
     'http://localhost:5174',
