@@ -14,7 +14,7 @@ const CONFIG = {
   //   - 'https://your-custom-domain.com'
   PLATFORM_B_URL: 'https://platform-b-two.vercel.app/',  // ⚠️ CHANGE THIS!
   
-  PLATFORM_C_URL: 'https://platform-c.vercel.app',
+  PLATFORM_C_URL: 'https://platform-c-gules.vercel.app/',
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4'
 };
