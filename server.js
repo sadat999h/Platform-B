@@ -298,8 +298,7 @@ app.get('/api/video/:videoId', async (req, res) => {
         hint: 'Add X-Security-String header'
       });
     }
-        // TEMPORARY - REMOVE THIS
-const secKey = req.headers['x-security-string'] || CONFIG.MASTER_SECURITY_STRING;
+
     if (secKey.trim() !== CONFIG.MASTER_SECURITY_STRING.trim()) {
       console.error('❌ Security mismatch');
       console.error('Received:', secKey);
