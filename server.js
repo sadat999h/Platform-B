@@ -5,8 +5,8 @@ const CONFIG = {
   ADMIN_USER_ID: 'admin',
   ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: '84418779257393762955868022673598',
-  PLATFORM_B_URL: 'https://platform-b-two.vercel.app',
-  PLATFORM_C_URL: 'https://platform-c.vercel.app', // Add your Platform C URL
+  PLATFORM_B_URL: 'https://platform-b-two.vercel.app/',
+  PLATFORM_C_URL: 'https://platform-c.vercel.app/', // Add your Platform C URL
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4'
 };
@@ -26,8 +26,10 @@ app.use((req, res, next) => {
   const allowedOrigins = [
     CONFIG.PLATFORM_C_URL,
     'https://platform-c.vercel.app',
+    'https://platform-c-vercel.app',
     'http://localhost:3000',
     'http://localhost:5173',
+    'http://localhost:5174',
     'http://127.0.0.1:5173',
     'http://127.0.0.1:3000'
   ];
@@ -280,12 +282,32 @@ app.get('/api/video/:videoId', async (req, res) => {
     const { videoId } = req.params;
     const secKey = req.headers['x-security-string'];
     
-    console.log('Video metadata request for:', videoId);
-    console.log('Security header present:', !!secKey);
+    console.log('=== VIDEO METADATA REQUEST ===');
+    console.log('Video ID:', videoId);
     console.log('Origin:', req.headers.origin);
+    console.log('Security header present:', !!secKey);
+    console.log('Security header value:', secKey ? `${secKey.substring(0, 10)}...` : 'MISSING');
+    console.log('Expected security:', CONFIG.MASTER_SECURITY_STRING.substring(0, 10) + '...');
     
-    if (secKey !== CONFIG.MASTER_SECURITY_STRING) {
-      return res.status(403).json({ success: false, message: 'Invalid security string' });
+    // More lenient security check with detailed logging
+    if (!secKey) {
+      console.error('❌ Security header missing');
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Security header required',
+        hint: 'Add X-Security-String header'
+      });
+    }
+    
+    if (secKey.trim() !== CONFIG.MASTER_SECURITY_STRING.trim()) {
+      console.error('❌ Security mismatch');
+      console.error('Received:', secKey);
+      console.error('Expected:', CONFIG.MASTER_SECURITY_STRING);
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Invalid security string',
+        hint: 'Check security string matches Platform B configuration'
+      });
     }
     
     console.log('✓ Security validated');
@@ -306,7 +328,7 @@ app.get('/api/video/:videoId', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Video not found' });
     }
     
-    console.log('Video found - Platform:', videoData.platform);
+    console.log('✓ Video found - Platform:', videoData.platform);
     
     // Update access count
     await supabase
@@ -319,6 +341,7 @@ app.get('/api/video/:videoId', async (req, res) => {
     
     // Return only proxy URL, NEVER original
     if (videoData.is_embed) {
+      console.log('✓ Returning embed URL');
       res.json({
         success: true,
         proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}`,
@@ -326,6 +349,7 @@ app.get('/api/video/:videoId', async (req, res) => {
         type: 'embed'
       });
     } else {
+      console.log('✓ Returning stream URL');
       res.json({
         success: true,
         proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}`,
@@ -348,9 +372,16 @@ app.get('/api/stream/:videoId', async (req, res) => {
     console.log('=== STREAM REQUEST ===');
     console.log('Video ID:', videoId);
     console.log('Origin:', req.headers.origin);
+    console.log('Security key present:', !!key);
     
-    if (key !== CONFIG.MASTER_SECURITY_STRING) {
-      return res.status(403).send('Forbidden');
+    if (!key) {
+      console.error('❌ Security key missing');
+      return res.status(403).send('Security key required');
+    }
+    
+    if (key.trim() !== CONFIG.MASTER_SECURITY_STRING.trim()) {
+      console.error('❌ Security key mismatch');
+      return res.status(403).send('Invalid security key');
     }
     
     console.log('✓ Security validated');
@@ -367,6 +398,7 @@ app.get('/api/stream/:videoId', async (req, res) => {
       .single();
     
     if (error || !videoData) {
+      console.error('Video not found:', error);
       return res.status(404).send('Not found');
     }
     
@@ -439,9 +471,21 @@ app.get('/api/embed/:videoId', async (req, res) => {
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
     
-    if (key !== CONFIG.MASTER_SECURITY_STRING) {
-      return res.status(403).send('Forbidden');
+    console.log('=== EMBED REQUEST ===');
+    console.log('Video ID:', videoId);
+    console.log('Security key present:', !!key);
+    
+    if (!key) {
+      console.error('❌ Security key missing');
+      return res.status(403).send('Security key required');
     }
+    
+    if (key.trim() !== CONFIG.MASTER_SECURITY_STRING.trim()) {
+      console.error('❌ Security key mismatch');
+      return res.status(403).send('Invalid security key');
+    }
+    
+    console.log('✓ Security validated');
     
     if (!supabase) {
       return res.status(500).send('Database error');
@@ -455,16 +499,20 @@ app.get('/api/embed/:videoId', async (req, res) => {
       .single();
     
     if (error || !videoData) {
+      console.error('Video not found:', error);
       return res.status(404).send('Not found');
     }
     
     const embedUrl = videoData.stream_url;
+    
+    console.log('Fetching embed from:', embedUrl);
     
     const response = await fetch(embedUrl, {
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
     
     if (!response.ok) {
+      console.error('Embed fetch failed:', response.status);
       return res.status(response.status).send('Embed error');
     }
     
@@ -473,7 +521,10 @@ app.get('/api/embed/:videoId', async (req, res) => {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
     
+    console.log('✓ Embed sent');
+    
   } catch (error) {
+    console.error('Embed error:', error);
     res.status(500).send('Error');
   }
 });
@@ -484,7 +535,19 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     database: supabase ? 'connected' : 'not connected',
     securityConfigured: !!CONFIG.MASTER_SECURITY_STRING,
-    cors: 'enabled'
+    cors: 'enabled',
+    securityString: CONFIG.MASTER_SECURITY_STRING.substring(0, 10) + '...'
+  });
+});
+
+// Debug endpoint - shows configuration (remove in production!)
+app.get('/api/debug', (req, res) => {
+  res.json({
+    securityString: CONFIG.MASTER_SECURITY_STRING,
+    platformBUrl: CONFIG.PLATFORM_B_URL,
+    platformCUrl: CONFIG.PLATFORM_C_URL,
+    supabaseConfigured: !!CONFIG.SUPABASE_URL && !!CONFIG.SUPABASE_SERVICE_KEY,
+    message: 'Remove this endpoint in production!'
   });
 });
 
@@ -500,6 +563,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Platform B running on port ${PORT}`);
   console.log(`CORS enabled for Platform C: ${CONFIG.PLATFORM_C_URL}`);
+  console.log(`Security string configured: ${CONFIG.MASTER_SECURITY_STRING.substring(0, 10)}...`);
 });
 
 export default app;
