@@ -12,7 +12,7 @@ const CONFIG = {
   //   - 'https://platform-b-two.vercel.app'
   //   - 'https://platform-b-abc123.vercel.app'
   //   - 'https://your-custom-domain.com'
-  PLATFORM_B_URL: 'https://platform-b-two.vercel.app/',  // ⚠️ CHANGE THIS!
+  PLATFORM_B_URL: 'https://platform-b-ten.vercel.app/',  // ⚠️ CHANGE THIS!
   
   PLATFORM_C_URL: 'https://platform-c-gules.vercel.app/',
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
