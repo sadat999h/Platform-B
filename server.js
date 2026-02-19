@@ -568,18 +568,10 @@ app.use((req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`========================================`);
-  console.log(`Platform B running on port ${PORT}`);
-  console.log(`========================================`);
-  console.log(`CORS enabled for: ${CONFIG.PLATFORM_C_URL}`);
-  console.log(`Platform B URL: ${CONFIG.PLATFORM_B_URL}`);
-  console.log(`Security: ${CONFIG.MASTER_SECURITY_STRING.substring(0, 10)}...`);
-  console.log(`========================================`);
-  console.log(`⚠️  IMPORTANT: Update PLATFORM_B_URL in CONFIG`);
-  console.log(`⚠️  Current: ${CONFIG.PLATFORM_B_URL}`);
-  console.log(`========================================`);
-});
+// Only listen locally, not on Vercel
+if (process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`Running on port ${PORT}`));
+}
 
 export default app;
