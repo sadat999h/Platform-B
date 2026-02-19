@@ -12,7 +12,7 @@ const CONFIG = {
   //   - 'https://platform-b-two.vercel.app'
   //   - 'https://platform-b-abc123.vercel.app'
   //   - 'https://your-custom-domain.com'
-  PLATFORM_B_URL: 'https://platform-b-ten.vercel.app/',  // ⚠️ CHANGE THIS!
+  PLATFORM_B_URL: 'https://platform-ar14ytgq5-sadat999hs-projects.vercel.app',
   
   PLATFORM_C_URL: 'https://platform-c-gules.vercel.app/',
   SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
@@ -568,10 +568,21 @@ app.use((req, res) => {
   });
 });
 
-// Only listen locally, not on Vercel
+// Only start local server when NOT on Vercel
 if (process.env.VERCEL !== '1') {
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`Running on port ${PORT}`));
+  app.listen(PORT, () => {
+    console.log(`========================================`);
+    console.log(`Platform B running on port ${PORT}`);
+    console.log(`========================================`);
+    console.log(`CORS enabled for: ${CONFIG.PLATFORM_C_URL}`);
+    console.log(`Platform B URL: ${CONFIG.PLATFORM_B_URL}`);
+    console.log(`Security: ${CONFIG.MASTER_SECURITY_STRING.substring(0, 10)}...`);
+    console.log(`========================================`);
+    console.log(`⚠️  IMPORTANT: Update PLATFORM_B_URL in CONFIG`);
+    console.log(`⚠️  Current: ${CONFIG.PLATFORM_B_URL}`);
+    console.log(`========================================`);
+  });
 }
 
 export default app;
