@@ -18,8 +18,8 @@ const CONFIG = {
   // Secret used to sign all tokens — change this to any long random string
   TOKEN_SECRET: 'plat-b-tok-secret-changeme-f7g2h9k3',
 
-  // Chunk size in bytes (2MB per chunk — small enough that IDM can't use partial pieces)
-  CHUNK_SIZE: 2 * 1024 * 1024
+  // Chunk size in bytes (8MB — large enough for smooth buffering, small enough IDM can't use partials)
+  CHUNK_SIZE: 8 * 1024 * 1024
 };
 
 import express from 'express';
