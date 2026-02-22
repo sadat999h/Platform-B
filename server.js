@@ -1,18 +1,25 @@
-// Platform B — server.js
-// Native video streaming with signed URL tokens.
-// NO MSE, NO chunking — browser handles everything natively.
-// IDM blocked by: 5-minute tokens (IDM can download within 5min, but Referer check stops it) + UA blocklist.
+// server.js - Platform B Backend with Supabase
+// Chunked streaming — IDM cannot intercept or reassemble chunks
 
 const CONFIG = {
-  ADMIN_USER_ID:          'admin',
-  ADMIN_PASSWORD:         'admin123',
+  ADMIN_USER_ID: 'admin',
+  ADMIN_PASSWORD: 'admin123',
   MASTER_SECURITY_STRING: '84418779257393762955868022673598',
-  PLATFORM_B_URL:         'https://platform-b-ten.vercel.app',   // ⚠️ no trailing slash
-  PLATFORM_C_URL:         'https://platform-c-gules.vercel.app', // ⚠️ no trailing slash
-  SUPABASE_URL:           'https://wkmxkdfkfpcmljegqasy.supabase.co',
-  SUPABASE_SERVICE_KEY:   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4',
-  TOKEN_SECRET:           'plat-b-tok-secret-changeme-f7g2h9k3', // ⚠️ change this!
-  TOKEN_TTL_MS:           300 * 1000,  // 5 minutes — covers most videos without needing a refresh mid-playback
+
+  // ⚠️ CHANGE THIS to your actual Vercel deployment URL (no trailing slash)
+  PLATFORM_B_URL: 'https://platform-b-ten.vercel.app',
+
+  // ⚠️ CHANGE THIS to your actual Platform C URL (no trailing slash)
+  PLATFORM_C_URL: 'https://platform-c-gules.vercel.app',
+
+  SUPABASE_URL: 'https://wkmxkdfkfpcmljegqasy.supabase.co',
+  SUPABASE_SERVICE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4',
+
+  // Secret used to sign all tokens — change this to any long random string
+  TOKEN_SECRET: 'plat-b-tok-secret-changeme-f7g2h9k3',
+
+  // Chunk size in bytes (8MB — large enough for smooth buffering, small enough IDM can't use partials)
+  CHUNK_SIZE: 8 * 1024 * 1024
 };
 
 import express from 'express';
@@ -22,288 +29,462 @@ import crypto from 'crypto';
 
 const app = express();
 
-// ── CORS ──────────────────────────────────────────────────────────────────────
+// ============================================
+// CORS — must be first
+// ============================================
 app.use((req, res, next) => {
-  const ALLOWED = [
-    CONFIG.PLATFORM_C_URL, CONFIG.PLATFORM_C_URL + '/',
-    'http://localhost:3000', 'http://localhost:5173',
-    'http://localhost:5174', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000',
+  const allowedOrigins = [
+    CONFIG.PLATFORM_C_URL,
+    CONFIG.PLATFORM_C_URL + '/',
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000'
   ];
+
   const origin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED.includes(origin) ? origin : (origin || '*'));
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  }
+
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
-  res.setHeader('Access-Control-Allow-Headers',
-    'Content-Type, X-Security-String, Accept, Origin, Range');
-  res.setHeader('Access-Control-Expose-Headers',
-    'Content-Type, Content-Length, Content-Range, Accept-Ranges');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, X-Stream-Token, X-Chunk-Token, Authorization, Accept, Origin, X-Requested-With, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Length, Content-Range, Accept-Ranges, X-Next-Chunk-Token, X-Total-Size, X-Chunk-Index, X-Is-Last-Chunk');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Vary', 'Origin');
+
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   next();
 });
+
 app.use(express.json());
 
-// ── SIGNED URL TOKEN ──────────────────────────────────────────────────────────
-// Token is in the URL query string (?tok=...) — this is how the browser sends
-// Range requests automatically (it re-uses the full src URL including query string).
-// Token expires in 45s — IDM takes longer than that to queue and start downloading.
-// Even if IDM gets the token in time, the Referer check kills it.
+// ============================================
+// TOKEN HELPERS
+// ============================================
 
-function generateToken(videoId) {
-  const expiry = Date.now() + CONFIG.TOKEN_TTL_MS;
-  const body   = `v:${videoId}:${expiry}`;
-  const sig    = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(body).digest('hex');
-  return Buffer.from(`${body}:${sig}`).toString('base64url');
+// Stream token — grants access to start a chunked stream session (5 min expiry)
+function generateStreamToken(videoId) {
+  const expiry = Date.now() + 5 * 60 * 1000;
+  const payload = `stream:${videoId}:${expiry}`;
+  const sig = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(payload).digest('hex');
+  return Buffer.from(`${payload}:${sig}`).toString('base64url');
 }
 
-function validateToken(token, videoId) {
+function validateStreamToken(token, videoId) {
   try {
-    const raw  = Buffer.from(token, 'base64url').toString('utf8');
-    const cut  = raw.lastIndexOf(':');
-    const body = raw.slice(0, cut);
-    const sig  = raw.slice(cut + 1);
-    const parts = body.split(':');
-    if (parts.length !== 3 || parts[0] !== 'v') return false;
-    if (parts[1] !== videoId) return false;
-    if (Date.now() > parseInt(parts[2], 10)) return false;
-    const exp = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(body).digest('hex');
-    if (sig.length !== exp.length) return false;
-    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(exp, 'hex'));
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = decoded.split(':');
+    // format: stream:videoId:expiry:sig
+    if (parts.length !== 4 || parts[0] !== 'stream') return false;
+    const [, vid, expiry, sig] = parts;
+    if (vid !== videoId) return false;
+    if (Date.now() > parseInt(expiry, 10)) return false;
+    const expected = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET)
+      .update(`stream:${vid}:${expiry}`).digest('hex');
+    if (sig.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
   } catch { return false; }
 }
 
-// ── SECURITY ──────────────────────────────────────────────────────────────────
-// IDM sends its own User-Agent or spoofs one — but it can't spoof Referer correctly
-// when the video is embedded inside Platform C's page.
-const UA_BLOCK = [
-  'idm/', 'internet download manager', 'fdm/', 'wget/', 'curl/',
-  'aria2/', 'uget/', 'getright', 'flashget', 'go-http-client/',
-  'python-requests', 'libwww-perl', 'okhttp/', 'httpie/', 'axel/',
-  'dlm/', 'download', 'manager',
-];
-
-function isBlockedUA(req) {
-  const ua = (req.headers['user-agent'] || '').toLowerCase();
-  return UA_BLOCK.some(b => ua.includes(b));
+// Chunk token — grants access to ONE specific chunk only (30 second expiry)
+// Each chunk response includes the token for the NEXT chunk
+// This means IDM cannot pre-fetch or download all chunks in parallel
+function generateChunkToken(videoId, chunkIndex) {
+  const expiry = Date.now() + 30 * 1000; // 30 seconds — just enough to fetch one chunk
+  const payload = `chunk:${videoId}:${chunkIndex}:${expiry}`;
+  const sig = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(payload).digest('hex');
+  return Buffer.from(`${payload}:${sig}`).toString('base64url');
 }
 
-function isValidReferer(req) {
-  const ref = req.headers['referer'] || '';
-  if (!ref) {
-    // No referer — could be browser privacy setting OR IDM.
-    // We allow it for the first request (browsers sometimes omit referer on initial load).
-    // But for Range requests (seeking), a proper browser always sends referer.
-    const isRange = !!req.headers['range'];
-    return !isRange; // allow no-referer only for non-range requests
-  }
-  return [
-    CONFIG.PLATFORM_C_URL,
-    'http://localhost:3000', 'http://localhost:5173',
-    'http://localhost:5174', 'http://127.0.0.1',
-  ].some(o => ref.startsWith(o));
+function validateChunkToken(token, videoId, chunkIndex) {
+  try {
+    const decoded = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = decoded.split(':');
+    // format: chunk:videoId:chunkIndex:expiry:sig
+    if (parts.length !== 5 || parts[0] !== 'chunk') return false;
+    const [, vid, idx, expiry, sig] = parts;
+    if (vid !== videoId) return false;
+    if (parseInt(idx, 10) !== chunkIndex) return false;
+    if (Date.now() > parseInt(expiry, 10)) return false;
+    const expected = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET)
+      .update(`chunk:${vid}:${idx}:${expiry}`).digest('hex');
+    if (sig.length !== expected.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+  } catch { return false; }
 }
 
-// ── SUPABASE ──────────────────────────────────────────────────────────────────
+// ============================================
+// SUPABASE INIT
+// ============================================
 let supabase;
 try {
-  supabase = createClient(
-    process.env.SUPABASE_URL         || CONFIG.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY || CONFIG.SUPABASE_SERVICE_KEY,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  );
+  const supabaseUrl = process.env.SUPABASE_URL || CONFIG.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_KEY || CONFIG.SUPABASE_SERVICE_KEY;
+  supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
 } catch (_) {}
 
-// ── URL CONVERTERS ────────────────────────────────────────────────────────────
-const converters = {
-  dropbox(url) {
-    let u = url;
-    if (!u.includes('raw=1'))
-      u = u.includes('dl=') ? u.replace(/dl=[01]/, 'raw=1') : u + (u.includes('?') ? '&' : '?') + 'raw=1';
-    return { streamUrl: u, success: true };
-  },
-  gdrive(url) {
-    const m = url.match(/\/file\/d\/([^/?]+)/) || [, url.match(/[?&]id=([^&]+)/)?.[1]];
-    if (!m?.[1]) return { success: false, message: 'Invalid Google Drive URL' };
-    return { streamUrl: `https://drive.google.com/uc?export=download&id=${m[1]}&confirm=t`, isGoogleDrive: true, success: true };
-  },
-  youtube(url) {
-    const u = new URL(url);
-    const id = u.hostname.includes('youtu.be') ? u.pathname.slice(1) : u.searchParams.get('v');
-    if (!id) return { success: false, message: 'Invalid YouTube URL' };
-    return { streamUrl: `https://www.youtube.com/embed/${id}`, isEmbed: true, success: true };
-  },
-  vimeo(url) {
-    const id = new URL(url).pathname.split('/').filter(Boolean)[0];
-    if (!id) return { success: false, message: 'Invalid Vimeo URL' };
-    return { streamUrl: `https://player.vimeo.com/video/${id}`, isEmbed: true, success: true };
-  },
-  dailymotion(url) {
-    const id = new URL(url).pathname.split('/').filter(p => p && p !== 'video')[0];
-    if (!id) return { success: false, message: 'Invalid Dailymotion URL' };
-    return { streamUrl: `https://www.dailymotion.com/embed/video/${id}`, isEmbed: true, success: true };
-  },
-};
+// ============================================
+// HELPERS
+// ============================================
+function isAllowedUA(req) {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  const blocked = [
+    'idm/', 'internet download manager', 'fdm', 'free download manager',
+    'wget', 'curl/', 'aria2', 'uget', 'getright', 'flashget', 'dap/',
+    'download accelerator', 'go-http-client', 'python-requests', 'libwww',
+    'java/', 'okhttp', 'httpie'
+  ];
+  return !blocked.some(b => ua.includes(b));
+}
 
-// ── ROUTES ────────────────────────────────────────────────────────────────────
+function isAllowedReferer(req) {
+  const referer = req.headers['referer'] || req.headers['origin'] || '';
+  if (!referer) return true; // allow direct (e.g. server-side)
+  const allowed = [
+    CONFIG.PLATFORM_C_URL,
+    'http://localhost:3000', 'http://localhost:5173',
+    'http://localhost:5174', 'http://127.0.0.1'
+  ];
+  return allowed.some(o => referer.startsWith(o));
+}
 
-app.post('/api/login', (req, res) => {
-  const { userId, password } = req.body || {};
-  if (userId === CONFIG.ADMIN_USER_ID && password === CONFIG.ADMIN_PASSWORD)
-    return res.json({ success: true });
-  res.status(401).json({ success: false, message: 'Invalid credentials' });
+// ============================================
+// URL CONVERTERS
+// ============================================
+function convertDropboxUrl(url) {
+  try {
+    let directUrl = url;
+    if (!url.includes('raw=1')) {
+      if (url.includes('dl=0'))      directUrl = url.replace('dl=0', 'raw=1');
+      else if (url.includes('dl=1')) directUrl = url.replace('dl=1', 'raw=1');
+      else                           directUrl = url + (url.includes('?') ? '&' : '?') + 'raw=1';
+    }
+    return { streamUrl: directUrl, useProxy: true, success: true };
+  } catch (e) { return { success: false, message: e.message }; }
+}
+
+function convertGoogleDriveUrl(url) {
+  try {
+    const matchFile = url.match(/\/file\/d\/([^/?]+)/);
+    const matchOpen = url.match(/[?&]id=([^&]+)/);
+    const fileId = matchFile ? matchFile[1] : matchOpen ? matchOpen[1] : null;
+    if (fileId) {
+      return {
+        streamUrl: `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t`,
+        fileId, useProxy: true, isGoogleDrive: true, success: true
+      };
+    }
+    return { success: false, message: 'Invalid Google Drive URL' };
+  } catch (e) { return { success: false, message: e.message }; }
+}
+
+function convertYouTubeUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.hostname.includes('youtu.be')
+      ? urlObj.pathname.slice(1)
+      : urlObj.searchParams.get('v');
+    if (videoId) {
+      return { streamUrl: `https://www.youtube.com/embed/${videoId}`, videoId, useProxy: true, isEmbed: true, success: true };
+    }
+    return { success: false, message: 'Invalid YouTube URL' };
+  } catch (e) { return { success: false, message: e.message }; }
+}
+
+function convertVimeoUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(Boolean)[0];
+    if (videoId) {
+      return { streamUrl: `https://player.vimeo.com/video/${videoId}`, videoId, useProxy: true, isEmbed: true, success: true };
+    }
+    return { success: false, message: 'Invalid Vimeo URL' };
+  } catch (e) { return { success: false, message: e.message }; }
+}
+
+function convertDailymotionUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const videoId = urlObj.pathname.split('/').filter(p => p && p !== 'video')[0];
+    if (videoId) {
+      return { streamUrl: `https://www.dailymotion.com/embed/video/${videoId}`, videoId, useProxy: true, isEmbed: true, success: true };
+    }
+    return { success: false, message: 'Invalid Dailymotion URL' };
+  } catch (e) { return { success: false, message: e.message }; }
+}
+
+// ============================================
+// ROUTES
+// ============================================
+
+// Login
+app.post('/api/login', async (req, res) => {
+  try {
+    const { userId, password } = req.body;
+    if (!userId || !password)
+      return res.status(400).json({ success: false, message: 'User ID and password required' });
+    if (userId === CONFIG.ADMIN_USER_ID && password === CONFIG.ADMIN_PASSWORD)
+      return res.json({ success: true, message: 'Login successful' });
+    res.status(401).json({ success: false, message: 'Invalid credentials' });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
+// Submit video
 app.post('/api/submit-video', async (req, res) => {
   try {
     const { userId, password, videoUrl, platform } = req.body;
     if (userId !== CONFIG.ADMIN_USER_ID || password !== CONFIG.ADMIN_PASSWORD)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    if (!videoUrl || !platform) return res.status(400).json({ success: false, message: 'Missing fields' });
-    if (!supabase) return res.status(500).json({ success: false, message: 'DB not ready' });
-    const conv = converters[platform.toLowerCase()];
-    if (!conv) return res.status(400).json({ success: false, message: 'Unsupported platform' });
-    let c;
-    try { c = conv(videoUrl); } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
-    if (!c.success) return res.status(400).json({ success: false, message: c.message });
+    if (!videoUrl || !platform)
+      return res.status(400).json({ success: false, message: 'Video URL and platform required' });
+    if (!supabase)
+      return res.status(500).json({ success: false, message: 'Database not initialized' });
+
+    const converters = {
+      dropbox: convertDropboxUrl, gdrive: convertGoogleDriveUrl,
+      youtube: convertYouTubeUrl, vimeo: convertVimeoUrl, dailymotion: convertDailymotionUrl
+    };
+    const converter = converters[platform.toLowerCase()];
+    if (!converter) return res.status(400).json({ success: false, message: 'Unsupported platform' });
+
+    const converted = converter(videoUrl);
+    if (!converted.success) return res.status(400).json({ success: false, message: converted.message });
+
     const videoId = crypto.randomBytes(16).toString('hex');
     const { error } = await supabase.from('videos').insert({
-      id: videoId, original_url: videoUrl, stream_url: c.streamUrl,
-      platform: platform.toLowerCase(), use_proxy: true,
-      is_embed: c.isEmbed || false, is_google_drive: c.isGoogleDrive || false,
-      created_by: userId, access_count: 0,
+      id: videoId, original_url: videoUrl, stream_url: converted.streamUrl,
+      platform: platform.toLowerCase(), use_proxy: converted.useProxy || false,
+      is_embed: converted.isEmbed || false, is_google_drive: converted.isGoogleDrive || false,
+      created_by: userId, access_count: 0
     });
+
     if (error) return res.status(500).json({ success: false, message: error.message });
-    res.json({ success: true, videoUrl: `${CONFIG.PLATFORM_B_URL}/video/${videoId}`, videoId });
+
+    res.json({
+      success: true,
+      videoUrl: `${CONFIG.PLATFORM_B_URL}/video/${videoId}`,
+      videoId, platform: platform.toLowerCase()
+    });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// Returns a signed stream URL valid for 45 seconds.
-// Client sets this as <video src> — browser handles all byte-range seeks natively.
-// Client auto-refreshes the token every 30s before expiry.
+// Get video metadata — returns a stream token, never the original URL
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
-    if ((req.headers['x-security-string'] || '').trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
+    const secKey = req.headers['x-security-string'];
+
+    if (!secKey || secKey.trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
       return res.status(403).json({ success: false, message: 'Forbidden' });
-    if (!supabase) return res.status(500).json({ success: false, message: 'DB not ready' });
-    const { data, error } = await supabase.from('videos').select('*').eq('id', videoId).single();
-    if (error || !data) return res.status(404).json({ success: false, message: 'Not found' });
-    supabase.from('videos')
-      .update({ access_count: (data.access_count || 0) + 1, last_accessed_at: new Date().toISOString() })
-      .eq('id', videoId).then(() => {});
-    if (data.is_embed) {
-      return res.json({ success: true, type: 'embed', platform: data.platform,
-        proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}` });
+    if (!supabase)
+      return res.status(500).json({ success: false, message: 'Database not initialized' });
+
+    const { data: videoData, error } = await supabase
+      .from('videos').select('*').eq('id', videoId).single();
+
+    if (error || !videoData)
+      return res.status(404).json({ success: false, message: 'Video not found' });
+
+    // Fire-and-forget access count update
+    supabase.from('videos').update({
+      access_count: videoData.access_count + 1,
+      last_accessed_at: new Date().toISOString()
+    }).eq('id', videoId).then(() => {});
+
+    if (videoData.is_embed) {
+      return res.json({
+        success: true,
+        proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}`,
+        platform: videoData.platform,
+        type: 'embed'
+      });
     }
-    const token     = generateToken(videoId);
-    const streamUrl = `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}?tok=${encodeURIComponent(token)}`;
+
+    // For video: return a stream token + the chunk endpoint URL
+    // The client must use /api/chunk/:videoId to fetch chunks
+    const streamToken = generateStreamToken(videoId);
+
+    // Also pre-generate the token for chunk 0 so the client can start immediately
+    const firstChunkToken = generateChunkToken(videoId, 0);
+
     return res.json({
-      success: true, type: 'video', platform: data.platform,
-      streamUrl,           // Set as <video src> directly — browser handles Range requests
-      tokenTtl: 300,       // seconds — client refreshes at 240s
+      success: true,
+      chunkUrl: `${CONFIG.PLATFORM_B_URL}/api/chunk/${videoId}`,
+      streamToken,       // used to get total size info
+      firstChunkToken,   // used to fetch chunk 0
+      platform: videoData.platform,
+      type: 'video'
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// Re-issue token endpoint — called by client before old token expires
-app.get('/api/refresh/:videoId', async (req, res) => {
+// Get video info (total size) — requires stream token
+// Client calls this first to know how many chunks to expect
+app.get('/api/info/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
-    if ((req.headers['x-security-string'] || '').trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
-      return res.status(403).json({ success: false });
-    if (!supabase) return res.status(500).json({ success: false });
-    const { data, error } = await supabase.from('videos').select('id').eq('id', videoId).single();
-    if (error || !data) return res.status(404).json({ success: false });
-    const token     = generateToken(videoId);
-    const streamUrl = `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}?tok=${encodeURIComponent(token)}`;
-    res.json({ success: true, streamUrl });
-  } catch (e) { res.status(500).json({ success: false }); }
+    const token = req.headers['x-stream-token'] || req.query.token;
+
+    if (!token || !validateStreamToken(token, videoId))
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    if (!isAllowedUA(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    if (!isAllowedReferer(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    if (!supabase) return res.status(500).json({ success: false, message: 'Database error' });
+
+    const { data: videoData, error } = await supabase
+      .from('videos').select('*').eq('id', videoId).single();
+    if (error || !videoData) return res.status(404).json({ success: false, message: 'Not found' });
+
+    // HEAD request to get total file size from the source
+    const fetchHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    };
+    if (videoData.is_google_drive) fetchHeaders['Referer'] = 'https://drive.google.com/';
+
+    const headRes = await fetch(videoData.stream_url, { method: 'HEAD', headers: fetchHeaders, redirect: 'follow' });
+    const totalSize = parseInt(headRes.headers.get('content-length') || '0', 10);
+    const contentType = headRes.headers.get('content-type') || 'video/mp4';
+    const totalChunks = totalSize > 0 ? Math.ceil(totalSize / CONFIG.CHUNK_SIZE) : null;
+
+    res.json({
+      success: true,
+      totalSize,
+      totalChunks,
+      chunkSize: CONFIG.CHUNK_SIZE,
+      contentType
+    });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// THE STREAMING ENDPOINT
-// Browser sends Range requests here automatically for seeking.
-// Token in ?tok= expires in 45s — IDM can't queue fast enough.
-// Strict Referer check: IDM sends wrong referer or none on range requests.
-app.get('/api/stream/:videoId', async (req, res) => {
+// Serve a single chunk — the CORE anti-IDM endpoint
+// Each chunk requires its own token valid for 30 seconds
+// The response includes the token for the NEXT chunk in a response header
+// IDM cannot pre-fetch chunks because it doesn't have the next token until it processes each response
+app.get('/api/chunk/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
-    const token       = req.query.tok;
+    const chunkIndex = parseInt(req.query.chunk || '0', 10);
 
-    // 1. Validate token
-    if (!token || !validateToken(token, videoId))
-      return res.status(403).send('Token expired or invalid. Refresh the page.');
+    // Validate the per-chunk token
+    const chunkToken = req.headers['x-chunk-token'] || req.query.chunkToken;
+    if (!chunkToken || !validateChunkToken(chunkToken, videoId, chunkIndex))
+      return res.status(403).send('Forbidden');
 
-    // 2. Block download managers by UA
-    if (isBlockedUA(req)) return res.status(403).send('Forbidden');
+    if (!isAllowedUA(req)) return res.status(403).send('Forbidden');
+    if (!isAllowedReferer(req)) return res.status(403).send('Forbidden');
+    if (!supabase) return res.status(500).send('Database error');
 
-    // 3. Strict Referer check — IDM fails this on Range requests
-    if (!isValidReferer(req)) return res.status(403).send('Forbidden');
+    const { data: videoData, error } = await supabase
+      .from('videos').select('*').eq('id', videoId).single();
+    if (error || !videoData) return res.status(404).send('Not found');
 
-    if (!supabase) return res.status(500).send('DB error');
+    const byteStart = chunkIndex * CONFIG.CHUNK_SIZE;
+    const byteEnd   = byteStart + CONFIG.CHUNK_SIZE - 1;
 
-    const { data, error } = await supabase
-      .from('videos').select('stream_url, is_google_drive').eq('id', videoId).single();
-    if (error || !data) return res.status(404).send('Not found');
-
-    // Build upstream headers
-    const upHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    const fetchHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept': '*/*',
+      'Range': `bytes=${byteStart}-${byteEnd}`
     };
-    // Forward the Range header — this is what makes seeking instant
-    if (req.headers.range)    upHeaders['Range']   = req.headers.range;
-    if (data.is_google_drive) upHeaders['Referer'] = 'https://drive.google.com/';
+    if (videoData.is_google_drive) fetchHeaders['Referer'] = 'https://drive.google.com/';
 
-    const upstream = await fetch(data.stream_url, { headers: upHeaders, redirect: 'follow' });
+    const response = await fetch(videoData.stream_url, { headers: fetchHeaders, redirect: 'follow' });
 
-    // Forward response headers
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
-      const v = upstream.headers.get(h);
-      if (v) res.setHeader(h.replace(/(^|-)(\w)/g, (_, a, b) => a + b.toUpperCase()), v);
+    if (!response.ok && response.status !== 206 && response.status !== 416) {
+      return res.status(response.status).send('Source error');
     }
-    res.setHeader('Accept-Ranges',       'bytes');
-    res.setHeader('Cache-Control',       'private, no-store');
+
+    // 416 = Range Not Satisfiable — means we've gone past end of file
+    if (response.status === 416) {
+      return res.status(204).send(); // No content — client knows stream is done
+    }
+
+    const contentRange  = response.headers.get('content-range');
+    const contentLength = response.headers.get('content-length');
+    const contentType   = response.headers.get('content-type') || 'video/mp4';
+
+    // Determine if this is the last chunk
+    let isLastChunk = false;
+    if (contentRange) {
+      const match = contentRange.match(/bytes (\d+)-(\d+)\/(\d+)/);
+      if (match) {
+        const totalSize = parseInt(match[3], 10);
+        isLastChunk = byteEnd >= totalSize - 1;
+      }
+    }
+
+    // Generate the token for the NEXT chunk and send it in a response header
+    // Without this token the client (and IDM) cannot fetch the next chunk
+    const nextChunkToken = isLastChunk ? '' : generateChunkToken(videoId, chunkIndex + 1);
+
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
     res.setHeader('Content-Disposition', 'inline');
-    res.setHeader('Connection',          'keep-alive');
-    res.setHeader('X-Accel-Buffering',   'no');  // tells Nginx/Vercel not to buffer — reduces latency
+    res.setHeader('X-Next-Chunk-Token', nextChunkToken);
+    res.setHeader('X-Chunk-Index', String(chunkIndex));
+    res.setHeader('X-Is-Last-Chunk', String(isLastChunk));
+    if (contentLength) res.setHeader('Content-Length', contentLength);
+    if (contentRange)  res.setHeader('Content-Range', contentRange);
     res.removeHeader('X-Powered-By');
 
-    // Use correct status code
-    const status = req.headers.range
-      ? (upstream.status === 206 ? 206 : 200)
-      : (upstream.status === 200 ? 200 : upstream.status);
-    res.status(status);
+    res.status(206);
     res.flushHeaders();
-    if (res.socket) { res.socket.setNoDelay(true); res.socket.setTimeout(0); }
-    upstream.body.pipe(res);
+
+    if (res.socket) {
+      res.socket.setNoDelay(true);
+      res.socket.setTimeout(0);
+    }
+
+    response.body.pipe(res);
 
   } catch (e) {
-    if (!res.headersSent) res.status(500).send('Stream error');
+    if (!res.headersSent) res.status(500).send('Chunk error');
   }
 });
 
+// Embed proxy — YouTube, Vimeo, Dailymotion
 app.get('/api/embed/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
     const key = req.query.key || req.headers['x-security-string'];
-    if ((key || '').trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
+    if (!key || key.trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
       return res.status(403).send('Forbidden');
-    if (!supabase) return res.status(500).send('DB error');
-    const { data, error } = await supabase.from('videos').select('*').eq('id', videoId).single();
-    if (error || !data) return res.status(404).send('Not found');
-    const r = await fetch(data.stream_url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!r.ok) return res.status(r.status).send('Embed error');
+    if (!supabase) return res.status(500).send('Database error');
+
+    const { data: videoData, error } = await supabase
+      .from('videos').select('*').eq('id', videoId).single();
+    if (error || !videoData) return res.status(404).send('Not found');
+
+    const response = await fetch(videoData.stream_url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!response.ok) return res.status(response.status).send('Embed error');
+
     res.setHeader('Content-Type', 'text/html');
-    res.send(await r.text());
+    res.send(await response.text());
   } catch (e) { res.status(500).send('Error'); }
 });
 
-app.get('/api/health', (_, res) =>
-  res.json({ status: 'ok', db: supabase ? 'ok' : 'error' }));
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', database: supabase ? 'connected' : 'not connected', securityConfigured: true });
+});
 
-app.use((_, res) => res.status(404).json({ success: false, message: 'Not found' }));
+// 404
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: 'Not found' });
+});
 
-if (process.env.VERCEL !== '1') app.listen(process.env.PORT || 3000);
+// Only start local server when NOT on Vercel
+if (process.env.VERCEL !== '1') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT);
+}
 
 export default app;
