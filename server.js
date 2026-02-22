@@ -193,13 +193,19 @@ function isAllowedReferer(req) {
   const origin  = req.headers['origin']  || '';
   const source  = referer || origin;
 
-  // CRITICAL FIX: Do NOT allow missing referer for chunk/stream endpoints.
-  // IDM and other download tools strip the Referer header.
-  // Real browsers always send Origin or Referer for cross-origin fetch() calls.
-  if (!source) return false;
+  // If no origin/referer, check host header (same-origin requests from Platform B itself)
+  if (!source) {
+    const host = req.headers['host'] || '';
+    const platformBHost = CONFIG.PLATFORM_B_URL.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    if (host === platformBHost || host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
+      return true;
+    }
+    return false; // IDM strips referer/origin — block it
+  }
 
   const allowed = [
     CONFIG.PLATFORM_C_URL,
+    CONFIG.PLATFORM_B_URL,
     'http://localhost:3000', 'http://localhost:5173',
     'http://localhost:5174', 'http://127.0.0.1'
   ];
@@ -455,7 +461,6 @@ app.get('/api/chunk/:videoId', async (req, res) => {
 
     if (!isAllowedUA(req)) return res.status(403).send('Forbidden');
     if (!isAllowedReferer(req)) return res.status(403).send('Forbidden');
-    if (!isStrictBrowserRequest(req)) return res.status(403).send('Forbidden');
     if (isRateLimited(req)) return res.status(429).send('Too many requests');
     if (!supabase) return res.status(500).send('Database error');
 
@@ -502,7 +507,7 @@ app.get('/api/chunk/:videoId', async (req, res) => {
     // Without this token the client (and IDM) cannot fetch the next chunk
     const nextChunkToken = isLastChunk ? '' : generateChunkToken(videoId, chunkIndex + 1);
 
-    res.setHeader('Content-Type', 'application/octet-stream'); // Mask as binary blob, not video/mp4
+    res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Content-Disposition', 'inline');
