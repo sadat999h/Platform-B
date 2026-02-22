@@ -1,7 +1,7 @@
 // Platform B — server.js
 // Native video streaming with signed URL tokens.
 // NO MSE, NO chunking — browser handles everything natively.
-// IDM blocked by: 45s token expiry + strict Referer check + UA blocklist.
+// IDM blocked by: 5-minute tokens (IDM can download within 5min, but Referer check stops it) + UA blocklist.
 
 const CONFIG = {
   ADMIN_USER_ID:          'admin',
@@ -12,7 +12,7 @@ const CONFIG = {
   SUPABASE_URL:           'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY:   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4',
   TOKEN_SECRET:           'plat-b-tok-secret-changeme-f7g2h9k3', // ⚠️ change this!
-  TOKEN_TTL_MS:           45 * 1000,   // 45 seconds — enough for the browser, too short for IDM
+  TOKEN_TTL_MS:           300 * 1000,  // 5 minutes — covers most videos without needing a refresh mid-playback
 };
 
 import express from 'express';
@@ -201,7 +201,7 @@ app.get('/api/video/:videoId', async (req, res) => {
     return res.json({
       success: true, type: 'video', platform: data.platform,
       streamUrl,           // Set as <video src> directly — browser handles Range requests
-      tokenTtl: 45,        // seconds — client refreshes at 30s
+      tokenTtl: 300,       // seconds — client refreshes at 240s
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
@@ -265,6 +265,8 @@ app.get('/api/stream/:videoId', async (req, res) => {
     res.setHeader('Accept-Ranges',       'bytes');
     res.setHeader('Cache-Control',       'private, no-store');
     res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Connection',          'keep-alive');
+    res.setHeader('X-Accel-Buffering',   'no');  // tells Nginx/Vercel not to buffer — reduces latency
     res.removeHeader('X-Powered-By');
 
     // Use correct status code
