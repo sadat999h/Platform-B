@@ -1,6 +1,7 @@
-// Platform B — server.js  (FINAL WORKING VERSION)
-// Strategy: byte-range proxy, session token in custom header.
-// Client uses blob: URL + MSE sequence mode — IDM sees nothing.
+// Platform B — server.js
+// Native video streaming with signed URL tokens.
+// NO MSE, NO chunking — browser handles everything natively.
+// IDM blocked by: 45s token expiry + strict Referer check + UA blocklist.
 
 const CONFIG = {
   ADMIN_USER_ID:          'admin',
@@ -11,6 +12,7 @@ const CONFIG = {
   SUPABASE_URL:           'https://wkmxkdfkfpcmljegqasy.supabase.co',
   SUPABASE_SERVICE_KEY:   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndrbXhrZGZrZnBjbWxqZWdxYXN5Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDMwNjI3NywiZXhwIjoyMDg1ODgyMjc3fQ.5CPVQiudL6OoXqlBf2Sk25XOa1PaQ1VwgUzpovUrZB4',
   TOKEN_SECRET:           'plat-b-tok-secret-changeme-f7g2h9k3', // ⚠️ change this!
+  TOKEN_TTL_MS:           45 * 1000,   // 45 seconds — enough for the browser, too short for IDM
 };
 
 import express from 'express';
@@ -28,12 +30,11 @@ app.use((req, res, next) => {
     'http://localhost:5174', 'http://127.0.0.1:5173', 'http://127.0.0.1:3000',
   ];
   const origin = req.headers.origin;
-  res.setHeader('Access-Control-Allow-Origin',
-    ALLOWED.includes(origin) ? origin : (origin || '*'));
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED.includes(origin) ? origin : (origin || '*'));
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, HEAD');
   res.setHeader('Access-Control-Allow-Headers',
-    'Content-Type, X-Security-String, X-Session-Token, Accept, Origin, Range');
+    'Content-Type, X-Security-String, Accept, Origin, Range');
   res.setHeader('Access-Control-Expose-Headers',
     'Content-Type, Content-Length, Content-Range, Accept-Ranges');
   res.setHeader('Access-Control-Max-Age', '86400');
@@ -41,31 +42,31 @@ app.use((req, res, next) => {
   if (req.method === 'OPTIONS') { res.status(204).end(); return; }
   next();
 });
-
 app.use(express.json());
 
-// ── SESSION TOKEN ─────────────────────────────────────────────────────────────
-// Token sent in X-Session-Token header. IDM cannot send custom headers — it only
-// copies URLs. So even if IDM sees the endpoint URL, it can't use it.
+// ── SIGNED URL TOKEN ──────────────────────────────────────────────────────────
+// Token is in the URL query string (?tok=...) — this is how the browser sends
+// Range requests automatically (it re-uses the full src URL including query string).
+// Token expires in 45s — IDM takes longer than that to queue and start downloading.
+// Even if IDM gets the token in time, the Referer check kills it.
 
-function generateSessionToken(videoId) {
-  const sid    = crypto.randomBytes(8).toString('hex');
-  const expiry = Date.now() + 2 * 60 * 60 * 1000; // 2 hours
-  const body   = `s:${videoId}:${sid}:${expiry}`;
+function generateToken(videoId) {
+  const expiry = Date.now() + CONFIG.TOKEN_TTL_MS;
+  const body   = `v:${videoId}:${expiry}`;
   const sig    = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(body).digest('hex');
   return Buffer.from(`${body}:${sig}`).toString('base64url');
 }
 
-function validateSessionToken(token, videoId) {
+function validateToken(token, videoId) {
   try {
-    const raw   = Buffer.from(token, 'base64url').toString('utf8');
-    const cut   = raw.lastIndexOf(':');
-    const body  = raw.slice(0, cut);
-    const sig   = raw.slice(cut + 1);
+    const raw  = Buffer.from(token, 'base64url').toString('utf8');
+    const cut  = raw.lastIndexOf(':');
+    const body = raw.slice(0, cut);
+    const sig  = raw.slice(cut + 1);
     const parts = body.split(':');
-    if (parts.length !== 4 || parts[0] !== 's') return false;
+    if (parts.length !== 3 || parts[0] !== 'v') return false;
     if (parts[1] !== videoId) return false;
-    if (Date.now() > parseInt(parts[3], 10)) return false;
+    if (Date.now() > parseInt(parts[2], 10)) return false;
     const exp = crypto.createHmac('sha256', CONFIG.TOKEN_SECRET).update(body).digest('hex');
     if (sig.length !== exp.length) return false;
     return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(exp, 'hex'));
@@ -73,17 +74,35 @@ function validateSessionToken(token, videoId) {
 }
 
 // ── SECURITY ──────────────────────────────────────────────────────────────────
+// IDM sends its own User-Agent or spoofs one — but it can't spoof Referer correctly
+// when the video is embedded inside Platform C's page.
 const UA_BLOCK = [
   'idm/', 'internet download manager', 'fdm/', 'wget/', 'curl/',
   'aria2/', 'uget/', 'getright', 'flashget', 'go-http-client/',
   'python-requests', 'libwww-perl', 'okhttp/', 'httpie/', 'axel/',
+  'dlm/', 'download', 'manager',
 ];
-const isBlockedUA    = req => UA_BLOCK.some(b => (req.headers['user-agent'] || '').toLowerCase().includes(b));
-const isAllowedOrigin = req => {
-  const ref = req.headers['referer'] || req.headers['origin'] || '';
-  if (!ref) return true;
-  return [CONFIG.PLATFORM_C_URL, 'http://localhost', 'http://127.0.0.1'].some(o => ref.startsWith(o));
-};
+
+function isBlockedUA(req) {
+  const ua = (req.headers['user-agent'] || '').toLowerCase();
+  return UA_BLOCK.some(b => ua.includes(b));
+}
+
+function isValidReferer(req) {
+  const ref = req.headers['referer'] || '';
+  if (!ref) {
+    // No referer — could be browser privacy setting OR IDM.
+    // We allow it for the first request (browsers sometimes omit referer on initial load).
+    // But for Range requests (seeking), a proper browser always sends referer.
+    const isRange = !!req.headers['range'];
+    return !isRange; // allow no-referer only for non-range requests
+  }
+  return [
+    CONFIG.PLATFORM_C_URL,
+    'http://localhost:3000', 'http://localhost:5173',
+    'http://localhost:5174', 'http://127.0.0.1',
+  ].some(o => ref.startsWith(o));
+}
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────────
 let supabase;
@@ -106,10 +125,7 @@ const converters = {
   gdrive(url) {
     const m = url.match(/\/file\/d\/([^/?]+)/) || [, url.match(/[?&]id=([^&]+)/)?.[1]];
     if (!m?.[1]) return { success: false, message: 'Invalid Google Drive URL' };
-    return {
-      streamUrl: `https://drive.google.com/uc?export=download&id=${m[1]}&confirm=t`,
-      isGoogleDrive: true, success: true,
-    };
+    return { streamUrl: `https://drive.google.com/uc?export=download&id=${m[1]}&confirm=t`, isGoogleDrive: true, success: true };
   },
   youtube(url) {
     const u = new URL(url);
@@ -143,19 +159,13 @@ app.post('/api/submit-video', async (req, res) => {
     const { userId, password, videoUrl, platform } = req.body;
     if (userId !== CONFIG.ADMIN_USER_ID || password !== CONFIG.ADMIN_PASSWORD)
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
-    if (!videoUrl || !platform)
-      return res.status(400).json({ success: false, message: 'Missing fields' });
-    if (!supabase)
-      return res.status(500).json({ success: false, message: 'DB not ready' });
-
+    if (!videoUrl || !platform) return res.status(400).json({ success: false, message: 'Missing fields' });
+    if (!supabase) return res.status(500).json({ success: false, message: 'DB not ready' });
     const conv = converters[platform.toLowerCase()];
     if (!conv) return res.status(400).json({ success: false, message: 'Unsupported platform' });
     let c;
-    try { c = conv(videoUrl); } catch (e) {
-      return res.status(400).json({ success: false, message: e.message });
-    }
+    try { c = conv(videoUrl); } catch (e) { return res.status(400).json({ success: false, message: e.message }); }
     if (!c.success) return res.status(400).json({ success: false, message: c.message });
-
     const videoId = crypto.randomBytes(16).toString('hex');
     const { error } = await supabase.from('videos').insert({
       id: videoId, original_url: videoUrl, stream_url: c.streamUrl,
@@ -168,78 +178,98 @@ app.post('/api/submit-video', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// Returns session token + endpoint — never the original URL
+// Returns a signed stream URL valid for 45 seconds.
+// Client sets this as <video src> — browser handles all byte-range seeks natively.
+// Client auto-refreshes the token every 30s before expiry.
 app.get('/api/video/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
     if ((req.headers['x-security-string'] || '').trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
       return res.status(403).json({ success: false, message: 'Forbidden' });
-    if (!supabase)
-      return res.status(500).json({ success: false, message: 'DB not ready' });
-
+    if (!supabase) return res.status(500).json({ success: false, message: 'DB not ready' });
     const { data, error } = await supabase.from('videos').select('*').eq('id', videoId).single();
     if (error || !data) return res.status(404).json({ success: false, message: 'Not found' });
-
     supabase.from('videos')
       .update({ access_count: (data.access_count || 0) + 1, last_accessed_at: new Date().toISOString() })
       .eq('id', videoId).then(() => {});
-
     if (data.is_embed) {
-      return res.json({
-        success: true, type: 'embed', platform: data.platform,
-        proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}`,
-      });
+      return res.json({ success: true, type: 'embed', platform: data.platform,
+        proxyUrl: `${CONFIG.PLATFORM_B_URL}/api/embed/${videoId}` });
     }
-
-    const sessionToken = generateSessionToken(videoId);
+    const token     = generateToken(videoId);
+    const streamUrl = `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}?tok=${encodeURIComponent(token)}`;
     return res.json({
-      success: true,
-      type: 'video',
-      platform: data.platform,
-      streamEndpoint: `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}`,
-      sessionToken,   // Client sends this as X-Session-Token header only
+      success: true, type: 'video', platform: data.platform,
+      streamUrl,           // Set as <video src> directly — browser handles Range requests
+      tokenTtl: 45,        // seconds — client refreshes at 30s
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// Core streaming endpoint — proxies any byte range from the source
-// SECURITY: Token MUST be in X-Session-Token header. IDM cannot send custom headers.
-// The <video> src on the client is blob:// so IDM never sees this URL anyway.
+// Re-issue token endpoint — called by client before old token expires
+app.get('/api/refresh/:videoId', async (req, res) => {
+  try {
+    const { videoId } = req.params;
+    if ((req.headers['x-security-string'] || '').trim() !== CONFIG.MASTER_SECURITY_STRING.trim())
+      return res.status(403).json({ success: false });
+    if (!supabase) return res.status(500).json({ success: false });
+    const { data, error } = await supabase.from('videos').select('id').eq('id', videoId).single();
+    if (error || !data) return res.status(404).json({ success: false });
+    const token     = generateToken(videoId);
+    const streamUrl = `${CONFIG.PLATFORM_B_URL}/api/stream/${videoId}?tok=${encodeURIComponent(token)}`;
+    res.json({ success: true, streamUrl });
+  } catch (e) { res.status(500).json({ success: false }); }
+});
+
+// THE STREAMING ENDPOINT
+// Browser sends Range requests here automatically for seeking.
+// Token in ?tok= expires in 45s — IDM can't queue fast enough.
+// Strict Referer check: IDM sends wrong referer or none on range requests.
 app.get('/api/stream/:videoId', async (req, res) => {
   try {
     const { videoId } = req.params;
-    const token       = req.headers['x-session-token'];
+    const token       = req.query.tok;
 
-    if (!token || !validateSessionToken(token, videoId)) return res.status(403).send('Forbidden');
-    if (isBlockedUA(req))       return res.status(403).send('Forbidden');
-    if (!isAllowedOrigin(req))  return res.status(403).send('Forbidden');
-    if (!supabase)              return res.status(500).send('DB error');
+    // 1. Validate token
+    if (!token || !validateToken(token, videoId))
+      return res.status(403).send('Token expired or invalid. Refresh the page.');
+
+    // 2. Block download managers by UA
+    if (isBlockedUA(req)) return res.status(403).send('Forbidden');
+
+    // 3. Strict Referer check — IDM fails this on Range requests
+    if (!isValidReferer(req)) return res.status(403).send('Forbidden');
+
+    if (!supabase) return res.status(500).send('DB error');
 
     const { data, error } = await supabase
       .from('videos').select('stream_url, is_google_drive').eq('id', videoId).single();
     if (error || !data) return res.status(404).send('Not found');
 
+    // Build upstream headers
     const upHeaders = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'Accept': '*/*',
     };
-    // Forward the browser's Range header — enables byte-range fetching for the pump
+    // Forward the Range header — this is what makes seeking instant
     if (req.headers.range)    upHeaders['Range']   = req.headers.range;
     if (data.is_google_drive) upHeaders['Referer'] = 'https://drive.google.com/';
 
     const upstream = await fetch(data.stream_url, { headers: upHeaders, redirect: 'follow' });
 
-    // Forward essential response headers
+    // Forward response headers
     for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
       const v = upstream.headers.get(h);
       if (v) res.setHeader(h.replace(/(^|-)(\w)/g, (_, a, b) => a + b.toUpperCase()), v);
     }
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('Accept-Ranges',       'bytes');
+    res.setHeader('Cache-Control',       'private, no-store');
     res.setHeader('Content-Disposition', 'inline');
     res.removeHeader('X-Powered-By');
 
-    const status = req.headers.range && upstream.status === 206 ? 206
+    // Use correct status code
+    const status = req.headers.range
+      ? (upstream.status === 206 ? 206 : 200)
       : (upstream.status === 200 ? 200 : upstream.status);
     res.status(status);
     res.flushHeaders();
@@ -268,7 +298,7 @@ app.get('/api/embed/:videoId', async (req, res) => {
 });
 
 app.get('/api/health', (_, res) =>
-  res.json({ status: 'ok', database: supabase ? 'connected' : 'disconnected' }));
+  res.json({ status: 'ok', db: supabase ? 'ok' : 'error' }));
 
 app.use((_, res) => res.status(404).json({ success: false, message: 'Not found' }));
 
