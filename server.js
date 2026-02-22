@@ -53,7 +53,7 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Security-String, X-Stream-Token, X-Chunk-Token, Authorization, Accept, Origin, X-Requested-With, Range');
-  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, Content-Length, Content-Range, Accept-Ranges, X-Next-Chunk-Token, X-Total-Size, X-Chunk-Index, X-Is-Last-Chunk');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type, X-Next-Chunk-Token, X-Total-Size, X-Chunk-Index, X-Is-Last-Chunk');
   res.setHeader('Access-Control-Max-Age', '86400');
   res.setHeader('Vary', 'Origin');
 
@@ -133,31 +133,106 @@ try {
 // ============================================
 // HELPERS
 // ============================================
+// Per-IP request tracking for rate limiting (in-memory, resets on cold start)
+const ipRequestMap = new Map();
+const IP_WINDOW_MS  = 10 * 1000; // 10-second window
+const IP_MAX_REQ    = 25;        // max chunk requests per window per IP
+
+function isRateLimited(req) {
+  const ip  = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+  const now = Date.now();
+  const rec = ipRequestMap.get(ip) || { count: 0, windowStart: now };
+
+  if (now - rec.windowStart > IP_WINDOW_MS) {
+    rec.count = 1; rec.windowStart = now;
+  } else {
+    rec.count++;
+  }
+  ipRequestMap.set(ip, rec);
+  // Cleanup old entries every 500 requests to avoid memory leak
+  if (ipRequestMap.size > 500) {
+    for (const [k, v] of ipRequestMap) {
+      if (now - v.windowStart > IP_WINDOW_MS * 3) ipRequestMap.delete(k);
+    }
+  }
+  return rec.count > IP_MAX_REQ;
+}
+
 function isAllowedUA(req) {
   const ua = (req.headers['user-agent'] || '').toLowerCase();
+
+  // Block empty or suspiciously short UAs (IDM without spoofing)
+  if (ua.length < 20) return false;
+
+  // Block known download manager signatures
   const blocked = [
     'idm/', 'internet download manager', 'fdm', 'free download manager',
     'wget', 'curl/', 'aria2', 'uget', 'getright', 'flashget', 'dap/',
     'download accelerator', 'go-http-client', 'python-requests', 'libwww',
-    'java/', 'okhttp', 'httpie'
+    'java/', 'okhttp', 'httpie', 'axel', 'xdm/', 'xtreme download'
   ];
-  return !blocked.some(b => ua.includes(b));
+  if (blocked.some(b => ua.includes(b))) return false;
+
+  // IDM spoofing detection: IDM spoofs as IE/Trident even on modern systems.
+  // Real browsers in 2024 do NOT send Trident/ in User-Agent.
+  // Flag: UA contains "trident/" but does NOT contain "windows phone" (WP was the only legit Trident user)
+  if (ua.includes('trident/') && !ua.includes('windows phone')) return false;
+
+  // IDM parallel-connection fingerprint: it sends Range + no Accept-Encoding
+  // Real browsers always send Accept-Encoding with gzip/br
+  const hasRange = !!req.headers['range'];
+  const hasAcceptEncoding = !!req.headers['accept-encoding'];
+  // If a Range request comes in without any Accept-Encoding, it's very likely IDM
+  if (hasRange && !hasAcceptEncoding) return false;
+
+  return true;
 }
 
 function isAllowedReferer(req) {
-  const referer = req.headers['referer'] || req.headers['origin'] || '';
-  if (!referer) return true; // allow direct (e.g. server-side)
+  const referer = req.headers['referer'] || '';
+  const origin  = req.headers['origin']  || '';
+  const source  = referer || origin;
+
+  // CRITICAL FIX: Do NOT allow missing referer for chunk/stream endpoints.
+  // IDM and other download tools strip the Referer header.
+  // Real browsers always send Origin or Referer for cross-origin fetch() calls.
+  if (!source) return false;
+
   const allowed = [
     CONFIG.PLATFORM_C_URL,
     'http://localhost:3000', 'http://localhost:5173',
     'http://localhost:5174', 'http://127.0.0.1'
   ];
-  return allowed.some(o => referer.startsWith(o));
+  return allowed.some(o => source.startsWith(o));
 }
 
-// ============================================
-// URL CONVERTERS
-// ============================================
+// Checks specifically for the /api/chunk and /api/info endpoints (strict browser-only check)
+function isStrictBrowserRequest(req) {
+  // Modern browsers always send Sec-Fetch-* headers on fetch() calls.
+  // IDM and download managers never send these (they're browser-internal).
+  // Note: Only check on non-preflight requests to avoid blocking OPTIONS.
+  const secFetchMode = req.headers['sec-fetch-mode'];
+  const secFetchDest = req.headers['sec-fetch-dest'];
+  const secFetchSite = req.headers['sec-fetch-site'];
+
+  // If ANY Sec-Fetch header is present, it's a real browser fetch()
+  // If NONE are present, it could be IDM (but also could be older browsers/server-side)
+  // We combine with referer check: if referer is present AND no Sec-Fetch, still allow
+  // because some browser extensions strip Sec-Fetch but keep Referer
+  const hasSecFetch = secFetchMode || secFetchDest || secFetchSite;
+  const hasReferer  = !!(req.headers['referer'] || req.headers['origin']);
+
+  // Block if: no Sec-Fetch headers AND no referer/origin at all
+  // (This is the classic IDM + stripped referer pattern)
+  if (!hasSecFetch && !hasReferer) return false;
+
+  // If sec-fetch-site is present, it should be 'cross-site' or 'same-origin' (not 'none' which means navigation)
+  // IDM intercepting navigation would show 'none'
+  if (secFetchMode === 'navigate') return false;
+
+  return true;
+}
+
 function convertDropboxUrl(url) {
   try {
     let directUrl = url;
@@ -336,6 +411,7 @@ app.get('/api/info/:videoId', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Forbidden' });
     if (!isAllowedUA(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
     if (!isAllowedReferer(req)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    if (isRateLimited(req)) return res.status(429).json({ success: false, message: 'Too many requests' });
     if (!supabase) return res.status(500).json({ success: false, message: 'Database error' });
 
     const { data: videoData, error } = await supabase
@@ -372,13 +448,15 @@ app.get('/api/chunk/:videoId', async (req, res) => {
     const { videoId } = req.params;
     const chunkIndex = parseInt(req.query.chunk || '0', 10);
 
-    // Validate the per-chunk token
-    const chunkToken = req.headers['x-chunk-token'] || req.query.chunkToken;
+    // Validate the per-chunk token — HEADER ONLY, never accept query param (IDM can read URL params)
+    const chunkToken = req.headers['x-chunk-token'];
     if (!chunkToken || !validateChunkToken(chunkToken, videoId, chunkIndex))
       return res.status(403).send('Forbidden');
 
     if (!isAllowedUA(req)) return res.status(403).send('Forbidden');
     if (!isAllowedReferer(req)) return res.status(403).send('Forbidden');
+    if (!isStrictBrowserRequest(req)) return res.status(403).send('Forbidden');
+    if (isRateLimited(req)) return res.status(429).send('Too many requests');
     if (!supabase) return res.status(500).send('Database error');
 
     const { data: videoData, error } = await supabase
@@ -424,18 +502,22 @@ app.get('/api/chunk/:videoId', async (req, res) => {
     // Without this token the client (and IDM) cannot fetch the next chunk
     const nextChunkToken = isLastChunk ? '' : generateChunkToken(videoId, chunkIndex + 1);
 
-    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Type', 'application/octet-stream'); // Mask as binary blob, not video/mp4
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('X-Content-Type-Options', 'nosniff');   // Prevent MIME sniffing by IDM
     res.setHeader('X-Next-Chunk-Token', nextChunkToken);
     res.setHeader('X-Chunk-Index', String(chunkIndex));
     res.setHeader('X-Is-Last-Chunk', String(isLastChunk));
-    if (contentLength) res.setHeader('Content-Length', contentLength);
-    if (contentRange)  res.setHeader('Content-Range', contentRange);
+    // CRITICAL: Do NOT send Accept-Ranges — this is what tells IDM the file is downloadable
+    res.removeHeader('Accept-Ranges');
+    // Do NOT forward Content-Range — hides the fact this is a partial file
+    // Do NOT send Content-Length — prevents IDM from knowing total chunk size
     res.removeHeader('X-Powered-By');
 
-    res.status(206);
+    // Use 200 not 206 — IDM specifically hooks 206 Partial Content responses to trigger download mode
+    res.status(200);
     res.flushHeaders();
 
     if (res.socket) {
